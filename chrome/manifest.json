@@ -1,0 +1,84 @@
+{
+  "manifest_version": 3,
+  "name": "CiteStamp",
+  "version": "1.0.4",
+  "description": "AI-invented citations caught. Retractions watched daily. Your work on an open graph, no gatekeeper. Free, in your browser.",
+  "homepage_url": "https://citestamp.com",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "alarms",
+    "clipboardWrite"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    },
+    "default_title": "CiteStamp — citation record for this page"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://arxiv.org/*",
+        "https://zenodo.org/*",
+        "https://doi.org/*",
+        "https://dx.doi.org/*",
+        "https://www.biorxiv.org/*",
+        "https://www.medrxiv.org/*",
+        "https://papers.ssrn.com/*",
+        "https://osf.io/*",
+        "https://www.nature.com/*",
+        "https://www.science.org/*",
+        "https://www.sciencedirect.com/*",
+        "https://link.springer.com/*",
+        "https://onlinelibrary.wiley.com/*",
+        "https://journals.plos.org/*",
+        "https://www.mdpi.com/*",
+        "https://www.frontiersin.org/*",
+        "https://pubmed.ncbi.nlm.nih.gov/*",
+        "https://www.ncbi.nlm.nih.gov/*",
+        "https://academic.oup.com/*",
+        "https://www.tandfonline.com/*",
+        "https://dl.acm.org/*",
+        "https://ieeexplore.ieee.org/*",
+        "https://www.pnas.org/*",
+        "https://elifesciences.org/*",
+        "https://www.cambridge.org/*",
+        "https://iopscience.iop.org/*",
+        "https://pubs.acs.org/*",
+        "https://www.semanticscholar.org/*",
+        "https://openalex.org/*"
+      ],
+      "js": [
+        "content/detect.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.overleaf.com/project/*"
+      ],
+      "js": [
+        "vendor/entitlement-v1.js",
+        "vendor/check-v1.js",
+        "vendor/picker-v1.js",
+        "vendor/continuous-v1.js",
+        "content/overleaf.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

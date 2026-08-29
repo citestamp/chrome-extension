@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="popup.css" />
+<title>CiteStamp</title>
+</head>
+<body>
+<header>
+  <span class="brand">Cite<span class="stamp">Stamp</span></span>
+  <span class="tag">who said what — on the record</span>
+</header>
+
+<main id="main">
+  <div id="status" class="status">looking at this page…</div>
+
+  <div id="nodoi" class="panel" hidden>
+    <p>No paper identifier detected on this page.</p>
+    <button id="scan">Scan this page</button>
+    <p class="fine">Scanning reads the page locally in your browser to look
+    for a DOI — nothing about the page is sent anywhere.</p>
+  </div>
+
+  <div id="result" hidden>
+    <div class="paper">
+      <div id="ptitle" class="ptitle"></div>
+      <div id="pid" class="pid"></div>
+    </div>
+    <div id="chips" class="chips"></div>
+    <div id="edges"></div>
+    <div id="plinks" class="plinks"></div>
+  </div>
+
+  <section id="watchlist" class="wl" hidden>
+    <div class="wl-head">
+      <span class="wl-title">Watchlist</span>
+      <span id="wl-count" class="wl-count"></span>
+    </div>
+
+    <button id="wl-add" class="wl-btn" hidden>Watch this paper</button>
+
+    <div id="wl-all" class="wl-all"></div>
+
+    <div id="wl-empty" class="wl-fine" hidden>No papers watched yet.</div>
+
+    <div class="wl-actions">
+      <button id="wl-recheck" class="wl-link">Re-check now</button>
+      <button id="wl-seen" class="wl-link" hidden>Mark changes seen</button>
+      <button id="wl-clear" class="wl-link wl-danger" hidden>Clear all</button>
+      <button id="wl-optstoggle" class="wl-link">Pro key</button>
+    </div>
+
+    <div id="wl-optbox" class="wl-optbox" hidden>
+      <input id="wl-token" type="password" autocomplete="off" spellcheck="false"
+             placeholder="Pro API key (optional)" />
+      <button id="wl-token-save" class="wl-link">save</button>
+      <span id="wl-token-status" class="wl-fine" aria-live="polite"></span>
+      <p class="wl-fine">A Pro API key turns the daily re-check into one batched
+      lookup. Optional — watching works without it. Stored only in this browser.</p>
+    </div>
+
+    <label class="wl-toggle">
+      <input id="wl-auto" type="checkbox" />
+      <span>Add papers I cite in Overleaf to this list</span>
+    </label>
+
+    <p class="wl-fine">Your watchlist stays in this browser — CiteStamp never
+    receives your reference list. Once a day, every item not checked in the last
+    24 hours is re-checked against Crossref, DataCite and OpenAlex, and flagged if
+    the publisher has since marked it retracted, withdrawn or removed, or filed an
+    expression of concern (best-effort).</p>
+  </section>
+</main>
+
+<footer>
+  <a href="https://citestamp.com/" target="_blank" rel="noopener">citestamp.com</a>
+  <span class="dot">·</span>
+  <a href="https://citestamp.com/privacy" target="_blank" rel="noopener">no tracking — privacy</a>
+</footer>
+
+<script src="../vendor/entitlement-v1.js"></script>
+<script src="../vendor/check-v1.js"></script>
+<script src="../vendor/watchlist-v1.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

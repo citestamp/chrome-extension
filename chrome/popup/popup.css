@@ -1,0 +1,280 @@
+/* CiteStamp popup — the site's two palettes (dark "archive" default, light
+   "manuscript" under a light OS preference), local fonts only: no
+   third-party requests from the extension, ever. */
+
+:root {
+  --ink: #16140f;
+  --surface: #211d15;
+  --line: #3a3326;
+  --line-soft: #2c271d;
+  --vellum: #ece2cf;
+  --vellum-dim: #a89c83;
+  --vellum-faint: #6f6651;
+  --seal: #d6a23f;
+  --seal-deep: #9c6e1f;
+  --steel: #8492a6;
+  --steel-dim: #5d6675;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  --serif: Georgia, "Times New Roman", serif;
+}
+
+/* Mirrors the site's light theme so the extension reads as the same place
+   as citestamp.com when the OS asks for light. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --ink: #f4eedf;
+    --surface: #fcf8ef;
+    --line: #d8cbb0;
+    --line-soft: #e6dcc6;
+    --vellum: #2c2517;
+    --vellum-dim: #6c6049;
+    --vellum-faint: #9a8e74;
+    --seal: #8a5f14;
+    --seal-deep: #6e4a0c;
+    --steel: #4f5a6e;
+    --steel-dim: #7c8799;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 380px;
+  margin: 0;
+  background: var(--ink);
+  color: var(--vellum);
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.brand { font-weight: 700; font-size: 18px; }
+.brand .stamp { color: var(--seal); }
+.tag { font-family: var(--mono); font-size: 10px; color: var(--vellum-faint); }
+
+main { padding: 12px 14px; min-height: 60px; }
+
+.status { font-family: var(--mono); font-size: 11.5px; color: var(--vellum-faint); }
+
+.panel p { margin: 8px 0; color: var(--vellum-dim); }
+.panel .fine { font-family: var(--mono); font-size: 10.5px; color: var(--vellum-faint); }
+
+button#scan {
+  background: transparent;
+  border: 1px solid var(--seal-deep);
+  color: var(--seal);
+  border-radius: 99px;
+  padding: 6px 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+button#scan:hover { border-color: var(--seal); }
+
+.ptitle { font-size: 15.5px; font-weight: 600; margin: 2px 0 4px; }
+.pid {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--vellum-dim);
+  word-break: break-all;
+}
+
+.chips { display: flex; gap: 8px; margin: 10px 0 4px; flex-wrap: wrap; }
+.chip {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  border-radius: 99px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+}
+.chip.signed { color: var(--seal); border-color: var(--seal-deep); }
+.chip.inferred { color: var(--steel); border-style: dashed; border-color: var(--steel-dim); }
+
+.tierhead {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin: 12px 0 4px;
+}
+.tierhead.signed { color: var(--seal); }
+.tierhead.inferred { color: var(--steel); }
+
+.edge {
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin: 5px 0;
+  font-size: 12.5px;
+}
+.edge.signed { border-left: 2px solid var(--seal-deep); }
+.edge.inferred { border-left: 2px dashed var(--steel-dim); }
+.edge .pred { font-family: var(--mono); font-size: 10.5px; color: var(--vellum-dim); }
+.edge .pred .dir { color: var(--vellum-faint); }
+.edge .other { display: block; color: var(--vellum); margin-top: 2px; word-break: break-word; }
+.edge .attr { font-family: var(--mono); font-size: 10px; color: var(--vellum-faint); margin-top: 2px; word-break: break-all; }
+
+.more { font-family: var(--mono); font-size: 10.5px; color: var(--vellum-faint); margin: 4px 0; }
+
+.plinks { display: flex; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
+.plinks a { font-family: var(--mono); font-size: 11.5px; color: var(--seal); text-decoration: none; }
+.plinks a:hover { text-decoration: underline; }
+
+footer {
+  display: flex;
+  gap: 8px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+footer a { color: var(--vellum-dim); text-decoration: none; }
+footer a:hover { color: var(--seal); }
+footer .dot { color: var(--vellum-faint); }
+
+/* --- watchlist ---------------------------------------------------------- */
+.wl {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.wl-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.wl-title {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vellum-dim);
+}
+.wl-count { font-family: var(--mono); font-size: 10.5px; color: var(--vellum-faint); }
+
+.wl-btn {
+  background: transparent;
+  border: 1px solid var(--seal-deep);
+  color: var(--seal);
+  border-radius: 99px;
+  padding: 6px 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+.wl-btn:hover { border-color: var(--seal); }
+.wl-btn:disabled { opacity: 0.55; cursor: default; }
+
+.wl-changed { margin: 6px 0 4px; }
+.wl-changed-head {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--seal);
+  margin-bottom: 4px;
+}
+.wl-item {
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-left: 2px solid var(--seal-deep);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin: 5px 0;
+  font-size: 12.5px;
+}
+.wl-item .wl-item-title { color: var(--vellum); word-break: break-word; }
+.wl-item .wl-item-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--vellum-faint);
+  margin-top: 2px;
+  word-break: break-all;
+}
+.wl-item .wl-item-prov {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--vellum-faint);
+  margin-top: 2px;
+  word-break: break-word;
+}
+.wl-item .wl-status { color: var(--seal); }
+
+/* Every watched paper, scrollable. Never truncated: a list the user cannot see
+   in full is a list they cannot consent to. */
+.wl-all { max-height: 260px; overflow-y: auto; margin: 6px 0 2px; scrollbar-width: thin; }
+.wl-all::-webkit-scrollbar { width: 6px; }
+.wl-all::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+.wl-all::-webkit-scrollbar-track { background: transparent; }
+.wl-all .wl-item { display: flex; align-items: flex-start; gap: 8px; }
+.wl-all .wl-item-body { flex: 1 1 auto; min-width: 0; }
+.wl-remove {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  padding: 0 2px;
+  line-height: 1;
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--vellum-faint);
+  cursor: pointer;
+}
+.wl-remove:hover { color: var(--seal); }
+
+.wl-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--vellum-dim);
+  cursor: pointer;
+}
+/* The native control is bright blue against a vellum/seal palette. */
+.wl-toggle input { margin: 0; accent-color: var(--seal); }
+
+/* A watched-but-unflagged paper should not wear the same warning stripe as a
+   retracted one. */
+.wl-item.is-ok { border-left-color: var(--line); }
+.wl-item .wl-status-ok { color: var(--vellum-faint); }
+.wl-link.wl-danger { color: #c4604b; }
+
+.wl-actions { display: flex; gap: 14px; margin: 10px 0 4px; flex-wrap: wrap; }
+.wl-link {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--seal);
+  cursor: pointer;
+}
+.wl-link:hover { text-decoration: underline; }
+
+.wl-optbox { margin: 6px 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.wl-optbox input {
+  flex: 1 1 180px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--vellum);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.wl-optbox .wl-fine { flex: 1 1 100%; }
+
+.wl-fine { font-family: var(--mono); font-size: 10.5px; color: var(--vellum-faint); margin: 6px 0 0; }
+
+[hidden] { display: none !important; }
