@@ -111,8 +111,9 @@ Free and Pro detect the same things. Pro buys automation, not sight.
 
 chrome://extensions → Developer mode → Load unpacked → `extension/chrome`.
 
-Chrome Web Store submission is a separate, deferred step (needs the CWS
-developer account). Nothing in the build depends on it.
+The extension is live on the Chrome Web Store; shipping an update = build the
+zip, then upload it in the CWS developer dashboard (review runs hours to a
+day). Nothing in the build depends on the store.
 
 ### Icons
 

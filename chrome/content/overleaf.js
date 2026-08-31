@@ -778,7 +778,8 @@
       c.uncertain + " uncertain · " + c.unresolved + " do not · " +
       (c.noMatch || 0) + " not verified · " +
       (c.unchecked || 0) + " couldn't check · " +
-      c.withRefutations + " with refutations · " + c.retracted + " retracted";
+      c.withRefutations + " with refutations · " + c.retracted + " retracted" +
+      (c.withFailedReplications ? " · " + c.withFailedReplications + " with failed replications (FORRT)" : "");
     head.style.color = DIM;
     head.style.marginBottom = "8px";
     out.appendChild(head);

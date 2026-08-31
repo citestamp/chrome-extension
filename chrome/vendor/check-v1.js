@@ -7,7 +7,7 @@
 "use strict";
 if (window.CiteStampCheck) { return; }
 
-var VERSION = "1.3.0";
+var VERSION = "1.4.0";
 var OPENALEX = "https://api.openalex.org";
 var CROSSREF = "https://api.crossref.org";
 var DATACITE = "https://api.datacite.org";
@@ -770,6 +770,10 @@ function emptyVerdict(ref) {
     refutationSources: [],
     inGraph: false,
     graphEdges: 0,
+    graphSigned: 0,
+    graphInferred: 0,
+    fredFailed: 0,
+    fredSuccessful: 0,
     retracted: "unknown",
     retractedVia: null,
     publisherEvent: null,
@@ -800,8 +804,16 @@ function checkOne(ref, opts) {
       var srcs = [];
       for (var i = 0; i < g.edges.length; i++) {
         var e = g.edges[i];
+        if (e.tier === "asserted") { v.graphSigned++; } else { v.graphInferred++; }
         if (e.predicate === "refutes" && e.object === target && e.tier === "asserted") {
           srcs.push(e.attribution);
+        }
+        // Typed replication outcomes (FORRT Replication Database) ride the
+        // inferred tier under their own attribution. Their counters stay
+        // separate: they are never folded into the signed refutation count.
+        if (e.object === target && e.attribution === "forrt-fred") {
+          if (e.predicate === "refutes") { v.fredFailed++; }
+          else if (e.predicate === "supports") { v.fredSuccessful++; }
         }
       }
       v.refutations = srcs.length;
@@ -946,6 +958,9 @@ function checkOne(ref, opts) {
             if (g && g.__status !== 404 && g.edges && g.edges.length > 0) {
               v.inGraph = true;
               v.graphEdges = g.edges.length;
+              for (var gi = 0; gi < g.edges.length; gi++) {
+                if (g.edges[gi].tier === "asserted") { v.graphSigned++; } else { v.graphInferred++; }
+              }
               v.notes.push("not in the major open databases, but it is in the CiteStamp citation graph (" + g.edges.length + " recorded citation claim" + (g.edges.length === 1 ? "" : "s") + ", which can include unverified depositor-declared references)");
             } else if (crDown || dcDown) {
               // a DOI REGISTRY did not answer, so nothing definitive is known
@@ -1074,7 +1089,7 @@ function checkBibliography(text, opts) {
   var refs = parseInput(text);
   var limit = opts.concurrency || 4;
   return pool(refs, limit, function (ref) { return checkOne(ref, opts); }).then(function (verdicts) {
-    var counts = { resolved: 0, uncertain: 0, unresolved: 0, noMatch: 0, unchecked: 0, withRefutations: 0, retracted: 0 };
+    var counts = { resolved: 0, uncertain: 0, unresolved: 0, noMatch: 0, unchecked: 0, withRefutations: 0, withFailedReplications: 0, retracted: 0 };
     for (var i = 0; i < verdicts.length; i++) {
       var v = verdicts[i];
       if (!v) { continue; }
@@ -1091,6 +1106,7 @@ function checkBibliography(text, opts) {
       else if (v.resolved) { counts.resolved++; }
       else { counts.unresolved++; }
       if (v.refutations > 0) { counts.withRefutations++; }
+      if (v.fredFailed > 0) { counts.withFailedReplications++; }
       if (v.retracted === "marked") { counts.retracted++; }
     }
     return {

@@ -96,6 +96,7 @@ button#scan:hover { border-color: var(--seal); }
 }
 .chip.signed { color: var(--seal); border-color: var(--seal-deep); }
 .chip.inferred { color: var(--steel); border-style: dashed; border-color: var(--steel-dim); }
+.chip.typed { color: var(--steel); border-color: var(--steel-dim); }
 
 .tierhead {
   font-family: var(--mono);
@@ -106,6 +107,7 @@ button#scan:hover { border-color: var(--seal); }
 }
 .tierhead.signed { color: var(--seal); }
 .tierhead.inferred { color: var(--steel); }
+.tierhead.typed { color: var(--steel); }
 
 .edge {
   background: var(--surface);
@@ -117,6 +119,7 @@ button#scan:hover { border-color: var(--seal); }
 }
 .edge.signed { border-left: 2px solid var(--seal-deep); }
 .edge.inferred { border-left: 2px dashed var(--steel-dim); }
+.edge.typed { border-left: 2px solid var(--steel-dim); }
 .edge .pred { font-family: var(--mono); font-size: 10.5px; color: var(--vellum-dim); }
 .edge .pred .dir { color: var(--vellum-faint); }
 .edge .other { display: block; color: var(--vellum); margin-top: 2px; word-break: break-word; }

@@ -67,17 +67,12 @@ function link(href, text) {
   return a;
 }
 
-function renderEdges(container, data, tier, label) {
+function renderEdges(container, data, edges, cls, label) {
   var titles = {};
   for (var i = 0; i < data.nodes.length; i++) {
     titles[data.nodes[i].id] = data.nodes[i].title;
   }
-  var edges = data.edges.filter(function (e) { return e.tier === tier; });
   if (!edges.length) return;
-
-  // CSS styles the signed tier under ".signed" (the gold-seal tier); the API
-  // tier token is "asserted". Map it so the human-accountable tier renders.
-  var cls = tier === "asserted" ? "signed" : tier;
 
   container.appendChild(el("div", "tierhead " + cls, label + " · " + edges.length));
 
@@ -89,14 +84,30 @@ function renderEdges(container, data, tier, label) {
     var row = el("div", "edge " + cls);
 
     var pred = el("span", "pred");
-    pred.appendChild(el("span", "dir", outgoing ? "this paper " : "is the target of "));
-    pred.appendChild(document.createTextNode(e.predicate.replace(/_/g, " ")));
-    if (!outgoing) pred.appendChild(el("span", "dir", " from"));
+    if (cls === "typed") {
+      // FORRT rows read as replication outcomes, not raw predicates.
+      var outcome = e.predicate === "refutes" ? "failed" : "successful";
+      if (outgoing) {
+        pred.appendChild(el("span", "dir", "this paper reports a "));
+        pred.appendChild(document.createTextNode(outcome + " replication"));
+        pred.appendChild(el("span", "dir", " of"));
+      } else {
+        pred.appendChild(document.createTextNode(outcome + " replication"));
+        pred.appendChild(el("span", "dir", " of this paper, reported by"));
+      }
+    } else {
+      pred.appendChild(el("span", "dir", outgoing ? "this paper " : "is the target of "));
+      pred.appendChild(document.createTextNode(e.predicate.replace(/_/g, " ")));
+      if (!outgoing) pred.appendChild(el("span", "dir", " from"));
+    }
     row.appendChild(pred);
 
     row.appendChild(el("span", "other", titles[otherId] || shortId(otherId)));
-    if (tier === "asserted" && e.attribution) {
+    if (cls === "signed" && e.attribution) {
       row.appendChild(el("span", "attr", "signed: " + e.attribution));
+    }
+    if (cls === "typed") {
+      row.appendChild(el("span", "attr", "coded by: forrt-fred (FORRT Replication Database) · inferred tier"));
     }
     container.appendChild(row);
   }
@@ -164,12 +175,21 @@ async function render(doi) {
   // when the title falls back to the identifier, showing it twice reads broken
   $("pid").textContent = heading === shortId(data.id) ? "" : shortId(data.id);
 
+  var signedEdges = data.edges.filter(function (e) { return e.tier === "asserted"; });
+  var typedEdges = data.edges.filter(function (e) { return e.tier === "inferred" && e.attribution === "forrt-fred"; });
+  var plainInferred = data.edges.filter(function (e) { return e.tier === "inferred" && e.attribution !== "forrt-fred"; });
+
   chips.appendChild(el("span", "chip signed", signed + " signed"));
   chips.appendChild(el("span", "chip inferred", inferred + " machine-inferred"));
+  var fredFailed = typedEdges.filter(function (e) { return e.predicate === "refutes"; }).length;
+  var fredOk = typedEdges.filter(function (e) { return e.predicate === "supports"; }).length;
+  if (fredFailed) chips.appendChild(el("span", "chip typed", fredFailed + " failed replication" + (fredFailed === 1 ? "" : "s") + " (FORRT)"));
+  if (fredOk) chips.appendChild(el("span", "chip typed", fredOk + " successful replication" + (fredOk === 1 ? "" : "s") + " (FORRT)"));
   if (data.truncated) chips.appendChild(el("span", "chip", "showing first 100"));
 
-  renderEdges(edgesBox, data, "asserted", "signed — a named researcher stands behind these");
-  renderEdges(edgesBox, data, "inferred", "inferred — machine sweeps, labelled as such");
+  renderEdges(edgesBox, data, signedEdges, "signed", "signed — a named researcher stands behind these");
+  renderEdges(edgesBox, data, typedEdges, "typed", "replication outcomes — coded by the forrt replication database, inferred tier");
+  renderEdges(edgesBox, data, plainInferred, "inferred", "inferred — machine sweeps, labelled as such");
   renderLinks(data.id || (DOI_PREFIX + doi), true);
 }
 
