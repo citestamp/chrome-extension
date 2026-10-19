@@ -1,16 +1,18 @@
-/* CiteStamp citation health v1.3.0 — checked in your browser.
+/* CiteStamp citation health v1.6.0 — checked in your browser.
    Docs + live tool: https://citestamp.com/check
-   Resolution is client-direct to OpenAlex and Crossref; the only CiteStamp
-   call is the public graph endpoint, with a bare identifier. Your
-   bibliography never leaves this browser. */
+   Resolution is client-direct to OpenAlex, Crossref and DataCite, and to
+   doi.org for a DOI none of them holds (registry mode: Crossref, DataCite
+   and doi.org only); the only CiteStamp call is the public graph endpoint,
+   with a bare identifier. Your bibliography never leaves this browser. */
 (function () {
 "use strict";
 if (window.CiteStampCheck) { return; }
 
-var VERSION = "1.4.0";
+var VERSION = "1.6.0";
 var OPENALEX = "https://api.openalex.org";
 var CROSSREF = "https://api.crossref.org";
 var DATACITE = "https://api.datacite.org";
+var DOIORG = "https://doi.org";
 var SITE = "https://citestamp.com";
 var MAILTO = "info@citestamp.com";
 
@@ -562,6 +564,156 @@ function parseInput(text) {
   return parseList(s);
 }
 
+// ---- references inside running text (1.6.0) --------------------------------
+// An assistant's answer is prose, not a reference list: a line is offered to
+// referenceFromText, which says whether it IS a reference. Unlike parseList
+// it never treats a whole line as a bare title, so a sentence of prose is not
+// sent to a title search. A line is a reference when it carries a DOI, an
+// arXiv id, or a title the APA / quoted-title rules can isolate (or the
+// "Title (Authors, 2017)" shape assistants write).
+
+// The arXiv id after "arxiv:" or an arxiv.org abs/pdf/html path, new style
+// (2201.11903, optional vN dropped), lowercased. Old-style ids are not read.
+function arxivIdIn(text) {
+  var s = lower(text);
+  var marks = ["arxiv.org/abs/", "arxiv.org/pdf/", "arxiv.org/html/", "arxiv:"];
+  for (var m = 0; m < marks.length; m++) {
+    var at = s.indexOf(marks[m]);
+    while (at >= 0) {
+      var j = at + marks[m].length;
+      while (j < s.length && s.charAt(j) === " ") { j++; }
+      var k = j;
+      var d1 = 0;
+      while (k < s.length && isDigit(s.charAt(k))) { k++; d1++; }
+      if (d1 === 4 && s.charAt(k) === ".") {
+        k++;
+        var d2 = 0;
+        while (k < s.length && isDigit(s.charAt(k))) { k++; d2++; }
+        if (d2 === 4 || d2 === 5) { return s.slice(j, k); }
+      }
+      at = s.indexOf(marks[m], at + 1);
+    }
+  }
+  return null;
+}
+
+// The cited year: the first "(YYYY" in the line. null when there is none.
+function citedYearIn(s) {
+  var at = s.indexOf("(");
+  while (at >= 0) {
+    if (isYearAt(s, at + 1)) { return parseInt(s.slice(at + 1, at + 5), 10); }
+    at = s.indexOf("(", at + 1);
+  }
+  return null;
+}
+
+// Any space-like character (no-break and thin spaces arrive in rendered
+// text) becomes a plain space before the scanners see it.
+function plainSpaces(s) {
+  var out = "";
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charCodeAt(i);
+    out += (c === 160 || c === 8199 || c === 8201 || c === 8202 || c === 8239) ? " " : s.charAt(i);
+  }
+  return out;
+}
+
+function startsLikeTitle(t) {
+  var c0 = t.charAt(0);
+  return isDigit(c0) || (c0 !== lower(c0)) || c0 === String.fromCharCode(34) ||
+    c0 === String.fromCharCode(8220);
+}
+
+// "Attention Is All You Need (Vaswani et al., 2017)": a capitalised span,
+// then a parenthetical that holds a comma and ends in a year. Returns
+// { title, year } or null.
+function titleBeforeAuthorYear(s) {
+  var at = s.indexOf(" (");
+  if (at < 8) { return null; }
+  var close = s.indexOf(")", at);
+  if (close < 0) { return null; }
+  var inner = s.slice(at + 2, close);
+  if (inner.indexOf(",") < 0 || inner.length > 120) { return null; }
+  var tail = trimStr(inner.slice(inner.lastIndexOf(",") + 1));
+  if (tail.length < 4 || !isYearAt(tail, 0)) { return null; }
+  var t = trimStr(s.slice(0, at));
+  while (t.length && ".,:;-".indexOf(t.charAt(t.length - 1)) >= 0) { t = trimStr(t.slice(0, t.length - 1)); }
+  if (!startsLikeTitle(t) || contentTokens(t).length < 3 || t.indexOf(". ") >= 0) { return null; }
+  return { title: t, year: parseInt(tail.slice(0, 4), 10) };
+}
+
+// A list marker typed as text ("- ", "* ", a bullet, "3. ", "3) ", "[3] ").
+function stripListMarker(s) {
+  var c0 = s.charAt(0);
+  if ((c0 === "-" || c0 === "*" || c0 === String.fromCharCode(8226) || c0 === String.fromCharCode(8211)) && s.charAt(1) === " ") {
+    return trimStr(s.slice(2));
+  }
+  var k = 0;
+  var open = c0 === "[";
+  if (open) { k = 1; }
+  var d = 0;
+  while (k < s.length && isDigit(s.charAt(k))) { k++; d++; }
+  if (d > 0 && d <= 3) {
+    var c = s.charAt(k);
+    if ((open && c === "]") || (!open && (c === "." || c === ")"))) {
+      if (s.charAt(k + 1) === " ") { return trimStr(s.slice(k + 2)); }
+    }
+  }
+  return s;
+}
+
+function referenceFromText(text) {
+  var s = stripListMarker(collapseSpaces(plainSpaces(String(text == null ? "" : text))));
+  if (s.length < 8 || s.length > 600) { return null; }
+  var doi = findDoi(s);
+  if (!doi) {
+    var ax = arxivIdIn(s);
+    if (ax) { doi = "10.48550/arxiv." + ax; }
+  }
+  var title = extractTitle(s);
+  // "Smith et al. (2020) showed that ..." passes the APA rule with a
+  // lowercase span; a cited title starts with a capital, a digit or a quote.
+  if (title && !startsLikeTitle(title)) { title = null; }
+  var year = title ? citedYearIn(s) : null;
+  if (!title) {
+    var ta = titleBeforeAuthorYear(s);
+    if (ta) { title = ta.title; year = ta.year; }
+  }
+  if (!doi && !title) { return null; }
+  return { key: null, doi: doi, title: title, year: year, raw: s.slice(0, 240) };
+}
+
+// A link in an answer. Only a doi.org link or an arxiv.org link carries an
+// identifier this reads; any other publisher URL returns null (a DOI dug out
+// of a publisher path can carry the path's tail). The link text becomes the
+// cited title only when it reads like one, so the DOI-title cross-check runs
+// on [Title](https://doi.org/...) and never on [Smith et al., 2020](...).
+function referenceFromLink(href, text) {
+  var h = String(href == null ? "" : href);
+  try { h = decodeURIComponent(h); } catch (e) {}
+  var cut = h.search("[?#]");
+  if (cut > 0) { h = h.slice(0, cut); }
+  var lo = lower(h);
+  var doi = null;
+  var hosts = ["https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "http://dx.doi.org/", "https://www.doi.org/"];
+  for (var i = 0; i < hosts.length; i++) {
+    if (lo.indexOf(hosts[i]) === 0) { doi = findDoi(h.slice(hosts[i].length)); break; }
+  }
+  if (!doi && (lo.indexOf("https://arxiv.org/") === 0 || lo.indexOf("https://www.arxiv.org/") === 0 ||
+      lo.indexOf("http://arxiv.org/") === 0)) {
+    var ax = arxivIdIn(lo);
+    if (ax) { doi = "10.48550/arxiv." + ax; }
+  }
+  if (!doi) { return null; }
+  var t = collapseSpaces(plainSpaces(String(text == null ? "" : text)));
+  while (t.length && ".,:;".indexOf(t.charAt(t.length - 1)) >= 0) { t = trimStr(t.slice(0, t.length - 1)); }
+  var lt = lower(t);
+  var titleLike = t.length > 0 && t.length <= 300 && findDoi(t) === null &&
+    lt.indexOf("http") !== 0 && lt.indexOf("arxiv") < 0 && lt.indexOf("et al") < 0 &&
+    !isYearAt(t, t.length - 4) && contentTokens(t).length >= 4 && startsLikeTitle(t);
+  return { key: null, doi: doi, title: titleLike ? t : null, year: null, raw: (t || h).slice(0, 240) };
+}
+
 // ---- network --------------------------------------------------------------
 
 function getJson(url) {
@@ -581,6 +733,31 @@ function lookupFailed(r) {
   return !r || (r.__status !== 200 && r.__status !== 404);
 }
 
+// Registry mode asks one more time after a non-answer, the way the server's
+// check_reference does. In a browser a 429 often arrives without CORS headers
+// and so reads as a network failure (status 0); both get the retry.
+function patientGet(url) {
+  return getJson(url).then(function (r) {
+    if (!lookupFailed(r)) { return r; }
+    return new Promise(function (done) { setTimeout(done, r && r.__status === 429 ? 1500 : 700); })
+      .then(function () { return getJson(url); });
+  });
+}
+
+// Crossref's polite pool answers list queries at 3 a second and 3 at once
+// (x-rate-limit-limit / x-concurrency-limit on its own answers, read
+// 2026-10-19). Registry mode runs many checks in a burst, so its title
+// searches go through one gate: one at a time, CR_SEARCH_GAP_MS apart.
+var CR_SEARCH_GAP_MS = 400;
+var crSearchGate = Promise.resolve();
+function gatedGet(url) {
+  var run = crSearchGate.then(function () { return patientGet(url); });
+  crSearchGate = run.then(function () {}, function () {}).then(function () {
+    return new Promise(function (done) { setTimeout(done, CR_SEARCH_GAP_MS); });
+  });
+  return run;
+}
+
 function openalexByDoi(doi, mailto) {
   var url = OPENALEX + "/works/" + doiUrl(doi) +
     "?select=id,doi,title,display_name,publication_year,is_retracted&mailto=" + encodeURIComponent(mailto);
@@ -593,32 +770,83 @@ function openalexSearch(title, mailto) {
   return getJson(url);
 }
 
-function crossrefByDoi(doi, mailto) {
+function crossrefByDoi(doi, mailto, get) {
   // Crossref takes the raw doi in the path (literal slashes), not encoded.
   var url = CROSSREF + "/works/" + doi + "?mailto=" + encodeURIComponent(mailto);
-  return getJson(url);
+  return (get || getJson)(url);
 }
 
-function crossrefSearch(title, mailto) {
+function crossrefSearch(title, mailto, get) {
   // Crossref bibliographic search: CORS-open, keyless, unmetered — the
   // fallback when OpenAlex title search is budget-limited. Same client-direct
   // contract: the title goes from the user's browser, never a CiteStamp server.
   var url = CROSSREF + "/works?query.bibliographic=" + encodeURIComponent(title) +
     "&rows=5&select=DOI,title,issued&mailto=" + encodeURIComponent(mailto);
-  return getJson(url);
+  return (get || getJson)(url);
 }
 
-function dataciteByDoi(doi) {
+// Registry mode: Crossref's bibliographic search inside one publication year,
+// with the citation as written. For a title that also names a later letter or
+// erratum, the bare-title search can rank the cited article outside its top
+// 5; measured for check_reference 2026-10-17 on the 2020 NEJM vaccine article,
+// which the citation inside its year put 5th.
+function crossrefSearchInYear(query, year, mailto, get) {
+  var url = CROSSREF + "/works?query.bibliographic=" + encodeURIComponent(query) +
+    "&filter=from-pub-date:" + year + "-01-01,until-pub-date:" + year + "-12-31" +
+    "&rows=10&select=DOI,title,issued&mailto=" + encodeURIComponent(mailto);
+  return (get || getJson)(url);
+}
+
+function dataciteByDoi(doi, get) {
   // DataCite registers DOIs for data + preprint repositories (Zenodo, Dryad,
   // figshare) that OpenAlex and Crossref often do not cover. Raw doi in path,
   // CORS-open. No mailto needed.
   var url = DATACITE + "/dois/" + doi;
-  return getJson(url);
+  return (get || getJson)(url);
+}
+
+// DataCite title search (registry mode only): an exact-phrase query on the
+// title field, narrowed to the cited year when there is one. Measured for
+// check_reference 2026-10-17: without the year, the real "Attention Is All
+// You Need" ranked outside DataCite's top 5. A double quote or a backslash
+// in the title would break the phrase, so both become spaces.
+function dataciteTitleSearch(title, year, get) {
+  var t = "";
+  var s = String(title == null ? "" : title);
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i);
+    t += (ch === String.fromCharCode(34) || ch === String.fromCharCode(92)) ? " " : ch;
+  }
+  var q = "titles.title:" + String.fromCharCode(34) + trimStr(t) + String.fromCharCode(34) +
+    (year ? " AND publicationYear:" + year : "");
+  var url = DATACITE + "/dois?page%5Bsize%5D=5&fields%5Bdois%5D=doi,titles,publicationYear&query=" +
+    encodeURIComponent(q);
+  return (get || getJson)(url);
 }
 
 function graphFor(site, identifier) {
   var url = site + "/api/v1/graph/" + identifier.split("/").map(encodeURIComponent).join("/");
   return getJson(url);
+}
+
+// The DOI system's own registration-agency lookup. It answers for EVERY DOI
+// agency (Crossref, DataCite, mEDRA, JaLC, CNKI, KISTI, Airiti, ISTIC, OP,
+// EIDR ...), keyless and CORS-open; OpenAlex, Crossref and DataCite between
+// them do not hold every registered DOI. Probed 2026-10-16: a registered DOI
+// answers [{ DOI, RA: "JaLC" }], an unregistered one [{ DOI, status: "DOI
+// does not exist" }], a malformed one status "Invalid DOI". Only those two
+// statuses are read as unregistered; anything else did not answer.
+// Returns { agency } | { unregistered: true } | { failed: true }.
+function doiRegistration(doi, get) {
+  var url = DOIORG + "/ra/" + doi.split("/").map(encodeURIComponent).join("/");
+  return (get || getJson)(url).then(function (r) {
+    var row = (r && r.__status === 200 && r.length) ? r[0] : null;
+    if (!row) { return { failed: true }; }
+    if (row.RA) { return { agency: String(row.RA) }; }
+    var st = lower(row.status || "");
+    if (st === "doi does not exist" || st === "invalid doi") { return { unregistered: true }; }
+    return { failed: true };
+  });
 }
 
 // ---- shaping --------------------------------------------------------------
@@ -666,6 +894,28 @@ function candsFromCrossref(cr) {
       title: title,
       display_name: title,
       publication_year: (it.issued && it.issued["date-parts"] && it.issued["date-parts"][0] && it.issued["date-parts"][0][0]) || null,
+      is_retracted: false
+    });
+  }
+  return out;
+}
+
+// The same candidate shape from a DataCite search answer (registry mode).
+function candsFromDataCite(dc) {
+  var out = [];
+  if (!dc || dc.__status !== 200 || !dc.data || !dc.data.length) { return out; }
+  for (var i = 0; i < dc.data.length; i++) {
+    var a = (dc.data[i] && dc.data[i].attributes) || {};
+    var doi = a.doi ? lower(a.doi) : null;
+    var title = (a.titles && a.titles[0] && a.titles[0].title) || null;
+    if (!doi || !title) { continue; }
+    var y = parseInt(String(a.publicationYear == null ? "" : a.publicationYear), 10);
+    out.push({
+      id: doiUrl(doi),
+      doi: doi,
+      title: title,
+      display_name: title,
+      publication_year: isNaN(y) ? null : y,
       is_retracted: false
     });
   }
@@ -766,6 +1016,8 @@ function emptyVerdict(ref) {
     suggestion: null,
     unchecked: false,
     noMatch: false,
+    doiAgency: null,
+    doiUnregistered: false,
     refutations: 0,
     refutationSources: [],
     inGraph: false,
@@ -788,7 +1040,14 @@ function checkOne(ref, opts) {
   opts = opts || {};
   var site = opts.site || SITE;
   var mailto = opts.mailto || MAILTO;
+  // registry mode: no OpenAlex call anywhere in this check (see the header)
+  var reg = opts.registries === true;
+  // registry mode reads every lookup with one patient retry; null = getJson
+  var get = reg ? patientGet : null;
   var v = emptyVerdict(ref);
+  // the graph answer already fetched for a DOI no open database had; a
+  // registered DOI that settles as resolved reuses it rather than asking twice
+  var unfoundGraph = null;
 
   function refutationsStep() {
     // The unattended monitor path (opts.noGraph) MUST NOT touch our graph
@@ -798,7 +1057,9 @@ function checkOne(ref, opts) {
     if (opts.noGraph) { return Promise.resolve(); }
     var canonId = v.work && v.work.doi ? doiUrl(v.work.doi) : null;
     if (!canonId) { return Promise.resolve(); }
-    return graphFor(site, canonId).then(function (g) {
+    var reuse = !!(unfoundGraph && ref.doi && lower(canonId) === lower(doiUrl(ref.doi)));
+    if (reuse) { v.graphSigned = 0; v.graphInferred = 0; }
+    return (reuse ? Promise.resolve(unfoundGraph) : graphFor(site, canonId)).then(function (g) {
       if (!g || g.__status === 404 || !g.edges) { return; }
       var target = g.id || canonId;
       var srcs = [];
@@ -822,7 +1083,7 @@ function checkOne(ref, opts) {
   }
 
   function retractionFromCrossref(doi) {
-    return crossrefByDoi(doi, mailto).then(function (cr) {
+    return crossrefByDoi(doi, mailto, get).then(function (cr) {
       if (cr && cr.message) {
         var ev = crossrefPublisherEvent(cr.message);
         if (ev) { applyPublisherEvent(v, ev); }
@@ -842,6 +1103,9 @@ function checkOne(ref, opts) {
   // The OpenAlex gates are unchanged.
   var suggestionScore = 0;
   function settleTitle(results, via, strict) {
+    // a registry-mode candidate carries the search it came from (src), so one
+    // pass can settle over Crossref's and DataCite's answers together
+    function viaFor(c) { return (c && c.src) || via; }
     var best = null;
     var bestScore = 0;
     var bestContain = null;
@@ -861,18 +1125,74 @@ function checkOne(ref, opts) {
       var bn = normTitle(best.title || best.display_name || "");
       exact = bn.length > 0 && bn === normTitle(ref.title);
     }
+    if (reg && strict) {
+      // Registry mode reads EVERY exact-title candidate, not just the first:
+      // exact twins are common (an NEJM letter reuses its article's title, a
+      // preprint and its journal version share one), so the cited year picks
+      // between them, and two that nothing tells apart stay "confirm".
+      var wanted = normTitle(ref.title);
+      var exacts = [];
+      for (var x = 0; x < results.length; x++) {
+        var xn = normTitle(results[x].title || results[x].display_name || "");
+        if (xn.length > 0 && xn === wanted) { exacts.push(results[x]); }
+      }
+      if (exacts.length > 0) {
+        var same = [];
+        var undated = [];
+        for (var y = 0; y < exacts.length; y++) {
+          var py = exacts[y].publication_year;
+          if (ref.year && py === ref.year) { same.push(exacts[y]); }
+          else if (!py) { undated.push(exacts[y]); }
+        }
+        var pool2 = ref.year ? (same.length ? same : undated) : exacts;
+        if (pool2.length === 0) {
+          // the exact title, but only from another year
+          var off = exacts[0];
+          v.resolved = true;
+          v.resolvedVia = viaFor(off);
+          v.weakMatch = true;
+          v.suggestion = null;
+          v.work = workFromOpenAlex(off);
+          v.notes.push("the cited title matches " + (v.work && v.work.doi ? v.work.doi : "a work") +
+            ", published " + off.publication_year + ", but the citation says " + ref.year +
+            " — confirm it is the work meant");
+          return Promise.resolve();
+        }
+        if (pool2.length > 1) {
+          var dois = [];
+          for (var z = 0; z < pool2.length && z < 3; z++) {
+            var zd = pool2[z].doi ? lower(stripDoiPrefix(pool2[z].doi)) : null;
+            if (zd && dois.indexOf(zd) < 0) { dois.push(zd); }
+          }
+          if (dois.length > 1) {
+            v.resolved = true;
+            v.resolvedVia = viaFor(pool2[0]);
+            v.weakMatch = true;
+            v.suggestion = null;
+            v.work = workFromOpenAlex(pool2[0]);
+            v.notes.push("several works share this exact title (" + dois.join(", ") + ") — confirm which one is meant");
+            return Promise.resolve();
+          }
+        }
+        best = pool2[0];
+        exact = true;
+      } else {
+        exact = false;
+      }
+    }
     if (best && (strict ? exact : bestScore >= 0.7)) {
       v.resolved = true;
-      v.resolvedVia = via;
+      v.resolvedVia = viaFor(best);
       v.suggestion = null;
       v.work = workFromOpenAlex(best);
       if (v.work && v.work.is_retracted) { v.retracted = "marked"; v.retractedVia = "openalex-flag"; }
-      if (v.work && v.work.doi) { return retractionFromCrossref(v.work.doi); }
+      // a DataCite-found work has no Crossref record to read a notice from
+      if (v.work && v.work.doi && viaFor(best) !== "datacite-title") { return retractionFromCrossref(v.work.doi); }
       return Promise.resolve();
     }
     if (best && bestScore >= (strict ? 0.5 : 0.4)) {
       v.resolved = true;
-      v.resolvedVia = via;
+      v.resolvedVia = viaFor(best);
       v.weakMatch = true;
       v.suggestion = null;
       v.work = workFromOpenAlex(best);
@@ -884,7 +1204,7 @@ function checkOne(ref, opts) {
       // tokens are present in a candidate — a short title of a longer work.
       // Surface as WEAK/uncertain, never a clean resolve.
       v.resolved = true;
-      v.resolvedVia = via;
+      v.resolvedVia = viaFor(bestContain);
       v.weakMatch = true;
       v.suggestion = null;
       v.work = workFromOpenAlex(bestContain);
@@ -904,21 +1224,190 @@ function checkOne(ref, opts) {
     return null;
   }
 
+  // Title search: OpenAlex first, then the Crossref bibliographic fallback
+  // under the stricter gates. Fills v when a gate clears and resolves to
+  // which sources ANSWERED, so the caller can tell a search result from an
+  // outage.
+  function titleSearch() {
+    if (reg) { return registryTitleSearch(); }
+    return openalexSearch(ref.title, mailto).then(function (oa) {
+      // an out-of-budget OpenAlex answers 429 OR 200 with an error body (no
+      // results array). Neither is an empty result set — treat both as the
+      // source not answering.
+      var oaAnswered = !!(oa && oa.__status === 200 && oa.results);
+      var settled = oaAnswered ? settleTitle(oa.results, "openalex-title", false) : null;
+      if (settled) { return settled.then(function () { return { oaAnswered: true, crAnswered: false }; }); }
+      // OpenAlex did not settle it (unavailable, or nothing cleared a gate)
+      // — fall back to Crossref bibliographic search under stricter gates.
+      return crossrefSearch(ref.title, mailto).then(function (cs) {
+        var crAnswered = !!(cs && cs.__status === 200 && cs.message && cs.message.items);
+        var answered = { oaAnswered: oaAnswered, crAnswered: crAnswered };
+        var settled2 = crAnswered ? settleTitle(candsFromCrossref(cs), "crossref-title", true) : null;
+        if (settled2) { return settled2.then(function () { return answered; }); }
+        return answered;
+      });
+    });
+  }
+
+  // Registry-mode title search: Crossref's bibliographic search, then
+  // DataCite's title search, under the strict exact-title gate. No OpenAlex
+  // call. DataCite is skipped only when Crossref already holds an exact title
+  // that does not contradict the cited year; otherwise both answers are
+  // settled together (an arXiv preprint lives in DataCite, while Crossref's
+  // top hit can be a different paper that happens to share its title).
+  // Resolves to which sources ANSWERED, like titleSearch.
+  function registryTitleSearch() {
+    var wanted = normTitle(ref.title);
+    function tag(cands, src) {
+      for (var i = 0; i < cands.length; i++) { cands[i].src = src; }
+      return cands;
+    }
+    function settles(cands) {
+      for (var i = 0; i < cands.length; i++) {
+        var n = normTitle(cands[i].title || "");
+        var py = cands[i].publication_year;
+        if (n.length > 0 && n === wanted && (!ref.year || !py || py === ref.year)) { return true; }
+      }
+      return false;
+    }
+    function hasExact(cands) {
+      for (var i = 0; i < cands.length; i++) {
+        var n = normTitle(cands[i].title || "");
+        if (n.length > 0 && n === wanted) { return true; }
+      }
+      return false;
+    }
+    // the citation as written, minus links and identifiers: authors, year and
+    // venue help Crossref's ranking
+    function citationText() {
+      var parts = String(ref.raw || ref.title || "").split(" ");
+      var keep = [];
+      for (var i = 0; i < parts.length; i++) {
+        var lo = lower(parts[i]);
+        if (lo.indexOf("http") === 0 || lo.indexOf("doi:") === 0 || lo.indexOf("arxiv:") === 0 || findDoi(parts[i]) !== null) { continue; }
+        keep.push(parts[i]);
+      }
+      return trimStr(keep.join(" ")).slice(0, 500);
+    }
+    return crossrefSearch(ref.title, mailto, gatedGet).then(function (cs) {
+      var crAnswered = !!(cs && cs.__status === 200 && cs.message && cs.message.items);
+      var crCands = crAnswered ? tag(candsFromCrossref(cs), "crossref-title") : [];
+      // the exact title, but not from the cited year: ask Crossref again
+      // inside that year before reading it as a mismatch
+      var inYear = (crAnswered && ref.year && hasExact(crCands) && !settles(crCands))
+        ? crossrefSearchInYear(citationText(), ref.year, mailto, gatedGet).then(function (ys) {
+            if (ys && ys.__status === 200 && ys.message && ys.message.items) {
+              crCands = tag(candsFromCrossref(ys), "crossref-title").concat(crCands);
+            }
+          })
+        : Promise.resolve();
+      return inYear.then(function () {
+        if (settles(crCands)) {
+          var s1 = settleTitle(crCands, "crossref-title", true);
+          return (s1 || Promise.resolve()).then(function () { return { oaAnswered: false, crAnswered: true, dcAnswered: false }; });
+        }
+        return dataciteTitleSearch(ref.title, ref.year, get).then(function (dc) {
+          var dcAnswered = !!(dc && dc.__status === 200 && dc.data);
+          var answered = { oaAnswered: false, crAnswered: crAnswered, dcAnswered: dcAnswered };
+          var merged = crCands.concat(dcAnswered ? tag(candsFromDataCite(dc), "datacite-title") : []);
+          var s2 = merged.length ? settleTitle(merged, "crossref-title", true) : null;
+          return (s2 || Promise.resolve()).then(function () { return answered; });
+        });
+      });
+    });
+  }
+
+  // Which title searches answered, as words: "OpenAlex or Crossref" in the
+  // default mode, "Crossref or DataCite" in registry mode.
+  function searchedNames(t) {
+    var names = [];
+    if (t.oaAnswered) { names.push("OpenAlex"); }
+    if (t.crAnswered) { names.push("Crossref"); }
+    if (t.dcAnswered) { names.push("DataCite"); }
+    return names.join(" or ");
+  }
+
+  function anyAnswered(t) {
+    return !!(t.oaAnswered || t.crAnswered || t.dcAnswered);
+  }
+
+  // OpenAlex, Crossref and DataCite all missed this DOI. That is not the DOI
+  // system's answer: mEDRA, JaLC, CNKI, KISTI and the other agencies register
+  // DOIs none of the three carries. doi.org decides, and only a DOI that NO
+  // agency registered can earn the hard negative.
+  function settleUnfoundDoi(reg) {
+    var agency = reg.agency || null;
+    var la = lower(agency || "");
+    var agencyDown = !!agency && ((la === "crossref" && crDown) || (la === "datacite" && dcDown));
+    if (reg.failed || agencyDown) {
+      // Not known whether this DOI is registered, or registered where we
+      // could not read it: a lookup that did not answer must never read as
+      // does-not-resolve.
+      v.unchecked = true;
+      v.notes.push(agencyDown
+        ? "this DOI is registered with " + agency + ", but " + agency + " did not answer, so its record could not be read"
+        : "the DOI lookup services did not answer");
+      return Promise.resolve();
+    }
+    if (agency) {
+      // A registered DOI whose record none of our sources carries. Not a
+      // negative, and not a clean resolve either: there is no record to
+      // cross-check the cited title or a retraction against, so it counts as
+      // uncertain, is never exported, and never enrols in a watchlist.
+      v.resolved = true;
+      v.resolvedVia = "doi-registration";
+      v.weakMatch = true;
+      v.doiAgency = agency;
+      v.work = { id: doiUrl(lower(ref.doi)), doi: lower(ref.doi), title: null, year: null, is_retracted: false };
+      v.notes.push("this DOI is registered with " + agency + ", but its record is not in the databases CiteStamp reads (" +
+        (reg ? "Crossref, DataCite" : "OpenAlex, Crossref, DataCite") + ") — open the DOI to confirm it is the work you meant");
+      return Promise.resolve();
+    }
+    // doi.org: no DOI agency has registered this DOI.
+    v.doiUnregistered = true;
+    var where = "not registered with any DOI agency (doi.org)";
+    if (!ref.title) {
+      v.notes.push("this DOI is " + where + ", and the reference has no title to search" +
+        (reg ? " (checked " + new Date().toISOString().slice(0, 10) + ")" : ""));
+      return Promise.resolve();
+    }
+    // A real paper cited with a mistyped DOI is the commonest slip of all:
+    // search the cited title before giving the negative.
+    var before = v.notes.length;
+    return titleSearch().then(function (t) {
+      if (v.resolved) {
+        // the title found the work; the cited DOI is still wrong, so this is
+        // never a clean resolve
+        v.weakMatch = true;
+        if (reg && v.notes.length > before) {
+          // the title gate already said what matched (another year, several
+          // twins, a weak match): lead with the DOI, do not repeat the match
+          v.notes.splice(before, 0, "the cited DOI is " + where);
+          return;
+        }
+        v.notes.push("the cited DOI is " + where + "; the cited title matches " +
+          (v.work && v.work.doi ? v.work.doi : "a work in the open record") + " — check the DOI");
+        return;
+      }
+      if (!anyAnswered(t)) {
+        v.notes.push("this DOI is " + where + "; the title search did not answer, so no corrected DOI could be looked up");
+      } else {
+        v.notes.push("this DOI is " + where + ", and the cited title has no confident match in " + searchedNames(t) +
+          " (checked " + new Date().toISOString().slice(0, 10) + ")");
+        if (reg && !t.crAnswered) { v.notes.push("Crossref's search did not answer, so a corrected DOI there may have been missed"); }
+        else if (reg && !t.dcAnswered) { v.notes.push("DataCite's search did not answer, so a corrected DOI there may have been missed"); }
+      }
+    });
+  }
+
   var crDown = false;
   var dcDown = false;
   var resolveStep;
   if (ref.doi) {
-    resolveStep = openalexByDoi(ref.doi, mailto).then(function (oa) {
-      if (oa && oa.__status === 200 && oa.id) {
-        v.resolved = true;
-        v.resolvedVia = "openalex-doi";
-        v.work = workFromOpenAlex(oa);
-        if (v.work && v.work.is_retracted) { v.retracted = "marked"; v.retractedVia = "openalex-flag"; }
-        // cross-check retraction via Crossref regardless (cheap, more coverage)
-        return retractionFromCrossref(ref.doi);
-      }
-      // OpenAlex missed (404) or was budget-limited (429) — try Crossref
-      return crossrefByDoi(ref.doi, mailto).then(function (cr) {
+    // Crossref, then DataCite, then (unless noGraph) our graph, then doi.org.
+    // Registry mode starts here; the default mode asks OpenAlex first.
+    var fromRegistries = function () {
+      return crossrefByDoi(ref.doi, mailto, get).then(function (cr) {
         if (lookupFailed(cr)) { crDown = true; }
         if (cr && cr.__status === 200 && cr.message) {
           v.resolved = true;
@@ -936,10 +1425,10 @@ function checkOne(ref, opts) {
           else { v.retracted = "clear"; }
           return;
         }
-        // OpenAlex and Crossref both missed. Many data + preprint repositories
+        // Crossref missed (and OpenAlex, outside registry mode). Many data + preprint repositories
         // (Zenodo, Dryad, figshare) register their DOIs with DataCite instead,
         // and citation databases do not index them. Try DataCite before giving up.
-        return dataciteByDoi(ref.doi).then(function (dc) {
+        return dataciteByDoi(ref.doi, get).then(function (dc) {
           if (lookupFailed(dc)) { dcDown = true; }
           if (dc && dc.__status === 200 && dc.data) {
             v.resolved = true;
@@ -955,6 +1444,7 @@ function checkOne(ref, opts) {
           // reach our origin. A watched DOI that once resolved will not fall to
           // this branch anyway; a newly-unresolvable one surfaces via status.
           return (opts.noGraph ? Promise.resolve(null) : graphFor(site, doiUrl(ref.doi))).then(function (g) {
+            if (g) { unfoundGraph = g; }
             if (g && g.__status !== 404 && g.edges && g.edges.length > 0) {
               v.inGraph = true;
               v.graphEdges = g.edges.length;
@@ -962,55 +1452,59 @@ function checkOne(ref, opts) {
                 if (g.edges[gi].tier === "asserted") { v.graphSigned++; } else { v.graphInferred++; }
               }
               v.notes.push("not in the major open databases, but it is in the CiteStamp citation graph (" + g.edges.length + " recorded citation claim" + (g.edges.length === 1 ? "" : "s") + ", which can include unverified depositor-declared references)");
-            } else if (crDown || dcDown) {
-              // a DOI REGISTRY did not answer, so nothing definitive is known
-              // about this DOI — a lookup outage must never read as
-              // does-not-resolve. (An OpenAlex outage alone does not gate
-              // this: Crossref and DataCite are the registries of record, and
-              // when both answer "not found" the negative verdict stands.)
-              v.unchecked = true;
-              v.notes.push("the DOI lookup services did not answer");
-            } else {
-              v.notes.push("not found in OpenAlex, Crossref, DataCite, or the CiteStamp graph");
             }
+            // Whether ANY DOI agency registered it decides the verdict. A
+            // registry outage alone no longer gates it: doi.org answers for
+            // every agency, and when doi.org itself does not answer the
+            // verdict is unchecked, never does-not-resolve.
+            return doiRegistration(ref.doi, get).then(settleUnfoundDoi);
           });
         });
       });
+    };
+    resolveStep = reg ? fromRegistries() : openalexByDoi(ref.doi, mailto).then(function (oa) {
+      if (oa && oa.__status === 200 && oa.id) {
+        v.resolved = true;
+        v.resolvedVia = "openalex-doi";
+        v.work = workFromOpenAlex(oa);
+        if (v.work && v.work.is_retracted) { v.retracted = "marked"; v.retractedVia = "openalex-flag"; }
+        // cross-check retraction via Crossref regardless (cheap, more coverage)
+        return retractionFromCrossref(ref.doi);
+      }
+      // OpenAlex missed (404) or was budget-limited (429) — try Crossref
+      return fromRegistries();
     });
   } else if (ref.title) {
-    resolveStep = openalexSearch(ref.title, mailto).then(function (oa) {
-      // an out-of-budget OpenAlex answers 429 OR 200 with an error body (no
-      // results array). Neither is an empty result set — treat both as the
-      // source not answering.
-      var oaAnswered = !!(oa && oa.__status === 200 && oa.results);
-      var settled = oaAnswered ? settleTitle(oa.results, "openalex-title", false) : null;
-      if (settled) { return settled; }
-      // OpenAlex did not settle it (unavailable, or nothing cleared a gate)
-      // — fall back to Crossref bibliographic search under stricter gates.
-      return crossrefSearch(ref.title, mailto).then(function (cs) {
-        var crAnswered = !!(cs && cs.__status === 200 && cs.message && cs.message.items);
-        var settled2 = crAnswered ? settleTitle(candsFromCrossref(cs), "crossref-title", true) : null;
-        if (settled2) { return settled2; }
-        if (!oaAnswered && !crAnswered) {
-          // no search source ANSWERED — a lookup outage, not a missing work;
-          // it must never read as does-not-resolve
-          v.unchecked = true;
-          v.notes.push("the title lookup services did not answer");
+    resolveStep = titleSearch().then(function (t) {
+      if (v.resolved) { return; }
+      if (!anyAnswered(t)) {
+        // no search source ANSWERED — a lookup outage, not a missing work;
+        // it must never read as does-not-resolve
+        v.unchecked = true;
+        v.notes.push("the title lookup services did not answer");
+      } else {
+        // A search source ANSWERED and nothing cleared a gate. That is a
+        // search RESULT, not an outage — sharing the "unchecked" status let
+        // a probable phantom hide behind "try again". Still never the hard
+        // does-not-resolve verdict: title search has recall limits, so a
+        // no-DOI reference reports a no-match, never "fake". (Status slug is
+        // "no-match", not a "verified" variant — the Word pane's vocabulary
+        // test bans that substring across its whole document.)
+        v.noMatch = true;
+        if (reg) {
+          // check_reference's wording: a title-only miss is "couldn't check"
+          // on every surface that renders registry mode, never a negative
+          v.notes.push("no DOI to look up, and no confident title match in " + searchedNames(t) +
+            " (checked " + new Date().toISOString().slice(0, 10) + "); a title search can miss a real work");
+          if (!t.crAnswered) { v.notes.push("Crossref's search did not answer for this check"); }
+          else if (!t.dcAnswered) { v.notes.push("DataCite's search did not answer for this check"); }
         } else {
-          // A search source ANSWERED and nothing cleared a gate. That is a
-          // search RESULT, not an outage — sharing the "unchecked" status let
-          // a probable phantom hide behind "try again". Still never the hard
-          // does-not-resolve verdict: title search has recall limits, so a
-          // no-DOI reference reports a no-match, never "fake". (Status slug is
-          // "no-match", not a "verified" variant — the Word pane's vocabulary
-          // test bans that substring across its whole document.)
-          v.noMatch = true;
           v.notes.push("no DOI to check against, and no confident title match -- not verified");
-          if (!oaAnswered || !crAnswered) {
+          if (!t.oaAnswered || !t.crAnswered) {
             v.notes.push("only one title search source answered for this check");
           }
         }
-      });
+      }
     });
   } else {
     resolveStep = Promise.resolve();
@@ -1127,6 +1621,8 @@ window.CiteStampCheck = {
   parseInput: parseInput,
   checkOne: checkOne,
   checkBibliography: checkBibliography,
-  provenanceLine: provenanceLine
+  provenanceLine: provenanceLine,
+  referenceFromText: referenceFromText,
+  referenceFromLink: referenceFromLink
 };
 })();

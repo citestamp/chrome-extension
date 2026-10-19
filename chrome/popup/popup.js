@@ -205,11 +205,45 @@ async function scanActiveTab(tab) {
   }
 }
 
+// AI assistant pages where the popup offers the reference check. The click is
+// the user's: activeTab grants this one tab, and the engine plus
+// content/assistant.js are injected only then (no content_scripts entry, so no
+// new permission and nothing running on these sites unasked).
+var ASSISTANT_HOSTS = { "claude.ai": 1, "gemini.google.com": 1 };
+
+function isAssistantPage(url) {
+  try { return !!ASSISTANT_HOSTS[new URL(url).hostname]; } catch (e) { return false; }
+}
+
+function showAssistant(tab) {
+  $("status").textContent = "";
+  $("assistant").hidden = false;
+  $("acheck").addEventListener("click", async function () {
+    $("acheck").disabled = true;
+    $("status").textContent = "starting the check in the page…";
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["vendor/check-v1.js", "content/assistant.js"],
+      });
+      window.close();
+    } catch (e) {
+      $("acheck").disabled = false;
+      $("status").textContent = "Chrome did not let CiteStamp read this tab. Reload the page and try again.";
+    }
+  });
+}
+
 async function main() {
   var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   var tab = tabs[0];
   if (!tab) {
     $("status").textContent = "no active tab";
+    return;
+  }
+
+  if (isAssistantPage(tab.url)) {
+    showAssistant(tab);
     return;
   }
 

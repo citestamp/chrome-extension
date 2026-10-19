@@ -14,6 +14,16 @@
 <main id="main">
   <div id="status" class="status">looking at this page…</div>
 
+  <div id="assistant" class="panel" hidden>
+    <p>Check the references in this conversation against the DOI registries.</p>
+    <button id="acheck">Check references on this page</button>
+    <p class="fine">The check runs in this tab and shows its results there.
+    Only each reference's DOI or title leaves your browser, straight to
+    Crossref, DataCite and doi.org; a DOI that resolves is also looked up in
+    CiteStamp's public graph. Afterwards, new answers in this tab are checked
+    as they finish, against the registries only.</p>
+  </div>
+
   <div id="nodoi" class="panel" hidden>
     <p>No paper identifier detected on this page.</p>
     <button id="scan">Scan this page</button>

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "CiteStamp",
-  "version": "1.0.5",
-  "description": "Every paper’s citation graph on your toolbar — signed and inferred kept apart. AI-invented citations caught. Free, in your browser.",
+  "name": "CiteStamp: Citation Graph & Reference Checker",
+  "version": "1.0.7",
+  "description": "Any paper's citation graph, signed and machine-inferred kept apart, plus a reference checker for Overleaf and AI chat answers. Free.",
   "homepage_url": "https://citestamp.com",
   "icons": {
     "16": "icons/icon16.png",

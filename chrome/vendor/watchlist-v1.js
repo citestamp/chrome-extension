@@ -1,7 +1,7 @@
 /* CiteStamp bibliography watchlist v1.0.0 — runs in your browser.
    Docs + live tool: https://citestamp.com/check
    Your watchlist stays in this browser: CiteStamp never receives your reference
-   list. Re-checks go client-direct to Crossref, DataCite and OpenAlex. */
+   list. Re-checks go client-direct to Crossref, DataCite, OpenAlex and doi.org. */
 (function () {
 "use strict";
 if (window.CiteStampWatchlist) { return; }

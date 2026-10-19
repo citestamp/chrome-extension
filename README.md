@@ -29,9 +29,45 @@ No analytics, no history collection, **no remote code anywhere in the
 package**, every core is vendored and loaded from disk. The detect/popup path
 above makes no third-party requests at all: it talks only to
 `api.citestamp.com`. The Overleaf writing surface does make client-direct
-requests to OpenAlex, Crossref and DataCite, because that is how a citation is
-resolved without uploading your bibliography to us.
+requests to OpenAlex, Crossref and DataCite (and doi.org for a DOI none of them
+holds), because that is how a citation is
+resolved without uploading your bibliography to us. The AI-chat check (below)
+asks Crossref, DataCite and doi.org only.
 Policy: https://citestamp.com/privacy
+
+### AI chat answers (1.0.7): content/assistant.js
+
+On claude.ai and gemini.google.com the popup offers **Check references on
+this page**. Nothing runs on those sites until that click: the file is not a
+declared content script, the popup injects `vendor/check-v1.js` +
+`content/assistant.js` with `chrome.scripting.executeScript`, and the click is
+what grants `activeTab`. No new permission, no `host_permissions`, no new
+`content_scripts` match (a new match would disable the extension on update until
+the user re-accepts).
+
+- **Finding references** is the engine's job (`CiteStampCheck.referenceFromText`
+  / `referenceFromLink`): a line is a reference when it carries a DOI, an arXiv
+  id, or a title the APA / quoted-title / "Title (Authors, Year)" rules isolate;
+  prose is never sent to a title search. Only doi.org and arxiv.org links are
+  read as identifiers. The script reads `li, p, td, dd, blockquote` generically,
+  skipping editable regions (the composer), code, nav, header, footer and forms,
+  so it does not depend on either site's markup.
+- **Registry mode** (`opts.registries`): Crossref, DataCite and doi.org, never
+  OpenAlex (its keyless budget is per IP), the same chain as the server's
+  `check_reference`. The user-asked check also reads the public graph for a
+  resolving DOI (refutations, FORRT replication outcomes); the automatic path
+  passes `noGraph:true` and never reaches a CiteStamp origin.
+- **The automatic path** is bounded: the MutationObserver callback only re-arms a
+  timer; a scan runs after 2.5 s of quiet (or 15 s of constant change), at most
+  every 4 s; a reference is checked only when its line reads the same in two
+  scans in a row; Claude's `data-is-streaming="true"` holds scans off; 100
+  automatic checks per tab session, then it pauses. A new conversation (path
+  change) clears the panel.
+- **Verdicts** render in `check_reference`'s four words: found, confirm, not
+  found, couldn't check. A hard negative needs a DOI that doi.org says no agency
+  registered, and its line names where it looked and the date.
+- The panel lives in a closed shadow root, built with `textContent` only (Gemini
+  enforces Trusted Types; page text is untrusted).
 
 ### Architecture notes (for the next wrapper)
 
