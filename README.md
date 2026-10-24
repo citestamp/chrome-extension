@@ -15,7 +15,7 @@ paper's identifier, shows an edge count on the toolbar badge, and the popup
 renders the paper's citation record, human-signed and machine-inferred
 claims kept strictly apart, same tier firewall as the site.
 
-Data flow (the whole of it):
+Data flow (every call the extension makes; the same list as https://citestamp.com/privacy):
 
 - `content/detect.js` reads the page **locally** (meta tags, URL, links)
   to find a DOI. Nothing about the page leaves the browser.
@@ -24,6 +24,19 @@ Data flow (the whole of it):
   unauthenticated) and badges the tab with the edge count.
 - The popup fetches the same public endpoint and renders it, with links to
   the paper page, graph view, and ORCID claim flow on citestamp.com.
+- On an Overleaf project, the bibliography check sends each reference's DOI or
+  title from your browser to Crossref, DataCite and OpenAlex, a DOI none of them
+  holds to doi.org, and resolved identifiers to the public graph endpoint. The
+  .bib file and the manuscript are never sent anywhere as a document.
+- The Pro `@cite` picker searches Crossref and OpenAlex with what you type.
+- The daily watchlist re-check asks Crossref, DataCite and OpenAlex directly and
+  sends nothing about your list to CiteStamp. With a Pro key it instead
+  downloads one shared file of publisher notices from api.citestamp.com, and the
+  key is the only thing it sends. A Pro key also goes to api.citestamp.com to
+  check your plan.
+- On claude.ai and gemini.google.com it checks references only when you click
+  for it: each DOI or title goes to Crossref, DataCite and doi.org, and a DOI
+  that resolves also goes to the public graph endpoint.
 
 No analytics, no history collection, **no remote code anywhere in the
 package**, every core is vendored and loaded from disk. The detect/popup path
@@ -112,7 +125,7 @@ BibTeX entry copied to the clipboard to paste into your `.bib`.
 - Staged claims are local-only, keyed by the Overleaf **project id**
   (`cs_staged:<project-id>`), never a user identity.
 - Direct `.bib` file writes (vs. clipboard) are a follow-up pending a probe
-  of Overleaf's internal file API against a real session (Rule 14).
+  of Overleaf's internal file API against a real session.
 
 It also carries the **citation-health** check, which is **free**, here and
 everywhere. A floating "CiteStamp: check bibliography" button opens a panel where
@@ -140,12 +153,12 @@ same virtualization reason.
 
 Free and Pro detect the same things. Pro buys automation, not sight.
 
-- Next writing surfaces after this: Word + Google Docs, then Zotero, each a
-  new adapter over the same core, never a fork of it.
+- The same core also runs in the Word add-in and the Zotero plugin; a Google
+  Docs add-on is next. Each is an adapter over the same core, never a fork of it.
 
 ### Loading unpacked
 
-chrome://extensions → Developer mode → Load unpacked → `extension/chrome`.
+chrome://extensions → Developer mode → Load unpacked → `chrome` (this repository's folder).
 
 The extension is live on the Chrome Web Store; shipping an update = build the
 zip, then upload it in the CWS developer dashboard (review runs hours to a
