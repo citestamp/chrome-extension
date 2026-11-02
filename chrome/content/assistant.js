@@ -294,11 +294,12 @@
         row.appendChild(wl);
       }
       if (v && v.retracted === "marked") {
-        row.appendChild(el("div", "flag", "marked retracted by the publisher (best-effort)"));
+        row.appendChild(el("div", "flag", C.markedLabel ? C.markedLabel(v) : "marked retracted (best-effort)"));
       } else if (v && v.publisherEvent && v.publisherEvent.type === "expression_of_concern") {
-        row.appendChild(el("div", "flag", "expression of concern on the publisher's record (best-effort)"));
+        row.appendChild(el("div", "flag", C.markingLabel ? C.markingLabel("expression_of_concern", v.publisherEvent.source) : "flagged with an expression of concern (best-effort)"));
       }
       var prov = (v && C.provenanceLine) ? C.provenanceLine(v.publisherEvent) : "";
+      if (!prov && v && C.markingOrigin) { prov = C.markingOrigin(v); }
       if (prov) { row.appendChild(el("div", "why", prov)); }
       if (v && v.refutations > 0) {
         row.appendChild(el("div", "flag", v.refutations + (v.refutations === 1 ? " recorded refutation" : " recorded refutations") +

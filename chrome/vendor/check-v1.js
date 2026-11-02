@@ -1,4 +1,4 @@
-/* CiteStamp citation health v1.6.0 — checked in your browser.
+/* CiteStamp citation health v1.6.4 — checked in your browser.
    Docs + live tool: https://citestamp.com/check
    Resolution is client-direct to OpenAlex, Crossref and DataCite, and to
    doi.org for a DOI none of them holds (registry mode: Crossref, DataCite
@@ -8,7 +8,7 @@
 "use strict";
 if (window.CiteStampCheck) { return; }
 
-var VERSION = "1.6.0";
+var VERSION = "1.6.4";
 var OPENALEX = "https://api.openalex.org";
 var CROSSREF = "https://api.crossref.org";
 var DATACITE = "https://api.datacite.org";
@@ -91,6 +91,15 @@ function normTitle(t) {
   return trimStr(out);
 }
 
+// Two titles are the same title when they normalise alike, or alike once the
+// spaces go: a PDF line break can turn "non-specific" into "nonspecific".
+function sameTitle(a, b) {
+  var na = normTitle(a);
+  var nb = normTitle(b);
+  if (na.length === 0 || nb.length === 0) { return false; }
+  return na === nb || na.split(" ").join("") === nb.split(" ").join("");
+}
+
 function tokens(t) {
   var parts = normTitle(t).split(" ");
   var keep = [];
@@ -164,7 +173,8 @@ function titleContainment(query, cand) {
 // ---- parsers --------------------------------------------------------------
 
 // BibTeX scanner. No regex with backslashes: walk braces by hand. Returns
-// refs [{key, doi, title, raw}].
+// refs [{key, doi, title, year, raw}]. Plain reference lines between or around
+// the entries are read as a list (a .bib pasted with a few typed lines).
 function parseBib(text) {
   var s = String(text == null ? "" : text);
   var refs = [];
@@ -174,6 +184,7 @@ function parseBib(text) {
     if (at < 0) { break; }
     var brace = s.indexOf("{", at);
     if (brace < 0) { break; }
+    pushPlainLines(refs, s.slice(i, at));
     // capture the whole {...} block with brace balancing
     var depth = 0;
     var end = brace;
@@ -185,6 +196,10 @@ function parseBib(text) {
     if (depth !== 0) { end = s.length - 1; }
     var inner = s.slice(brace + 1, end);
     var rawEntry = s.slice(at, end + 1);
+    i = end + 1;
+    // @comment, @string and @preamble carry no reference
+    var kind = lower(trimStr(s.slice(at + 1, brace)));
+    if (kind === "comment" || kind === "string" || kind === "preamble") { continue; }
     // cite key = up to the first comma
     var comma = inner.indexOf(",");
     var key = comma >= 0 ? trimStr(inner.slice(0, comma)) : null;
@@ -192,11 +207,56 @@ function parseBib(text) {
     var doi = fieldValue(inner, "doi");
     if (doi) { doi = findDoi(doi) || lower(stripDoiPrefix(doi)); }
     if (!doi) { doi = findDoi(inner); }
+    // an arXiv id anywhere in the entry is its identifier: read it before any
+    // title search can settle on a later work that shares the title
+    if (!doi) {
+      var ax = bibArxivId(inner);
+      if (ax) { doi = "10.48550/arxiv." + ax; }
+    }
     var title = fieldValue(inner, "title");
-    refs.push({ key: key, doi: doi || null, title: title || null, raw: trimStr(rawEntry).slice(0, 240) });
-    i = end + 1;
+    refs.push({ key: key, doi: doi || null, title: title || null, year: bibYear(inner), raw: trimStr(rawEntry).slice(0, 240) });
   }
+  pushPlainLines(refs, s.slice(i));
   return refs;
+}
+
+// The arXiv id a BibTeX entry carries: in any field (journal = {arXiv preprint
+// arXiv:1706.03762}, a url, a note), or as eprint with archivePrefix = {arXiv}.
+function bibArxivId(inner) {
+  var ax = arxivIdIn(inner);
+  if (ax) { return ax; }
+  var pre = lower(fieldValue(inner, "archiveprefix") || fieldValue(inner, "eprinttype") || "");
+  if (pre !== "arxiv") { return null; }
+  return arxivIdIn("arxiv:" + (fieldValue(inner, "eprint") || ""));
+}
+
+// The year a BibTeX entry cites: year = {2017}, or a biblatex date = {2017-06-12}.
+function bibYear(inner) {
+  var y = trimStr(fieldValue(inner, "year") || fieldValue(inner, "date") || "");
+  return isYearAt(y, 0) ? parseInt(y.slice(0, 4), 10) : null;
+}
+
+// A heading line in a pasted reference list, never a reference itself.
+function isHeaderLine(t) {
+  var bare = lower(trimStr(t));
+  if (bare.charAt(bare.length - 1) === ":") { bare = bare.slice(0, bare.length - 1); }
+  return bare === "references" || bare === "bibliography" || bare === "works cited" || bare === "reference list";
+}
+
+// Text outside the BibTeX entries: reference lines are read as a list; blank
+// lines, % comments and headings ("References", "My sources:") are not references.
+function pushPlainLines(refs, text) {
+  var lines = String(text == null ? "" : text).split(String.fromCharCode(10));
+  var keep = [];
+  for (var i = 0; i < lines.length; i++) {
+    var t = trimStr(lines[i]);
+    if (t.length === 0 || t.charAt(0) === "%" || isHeaderLine(t)) { continue; }
+    if (t.charAt(t.length - 1) === ":" && t.split(" ").length <= 4) { continue; }
+    keep.push(t);
+  }
+  if (keep.length === 0) { return; }
+  var more = parseList(keep.join(String.fromCharCode(10)));
+  for (var j = 0; j < more.length; j++) { refs.push(more[j]); }
 }
 
 // Read a BibTeX field value (brace- or quote-delimited) for a field name.
@@ -295,7 +355,91 @@ function titleSpan(rest) {
   return trimStr(out);
 }
 
-function extractTitle(line) {
+// Vancouver (ICMJE) reference lines: "Polack FP, Thomas SJ, Kitchin N, et al.
+// Safety and efficacy of ... vaccine. N Engl J Med. 2020;383(27):2603-2615."
+// Each name is a surname, then its initials in capitals with no dots.
+var NAME_PARTICLES = { van: 1, der: 1, den: 1, de: 1, von: 1, la: 1, le: 1, di: 1, da: 1, du: 1, del: 1, dos: 1, das: 1, ten: 1, ter: 1 };
+
+function isInitials(w) {
+  if (w.length < 1 || w.length > 4) { return false; }
+  for (var i = 0; i < w.length; i++) {
+    var c = w.charAt(i);
+    if (c < "A" || c > "Z") { return false; }
+  }
+  return true;
+}
+
+function isSurnameWord(w) {
+  if (NAME_PARTICLES[w]) { return true; }
+  var c0 = w.charAt(0);
+  if (w.length < 2 || c0 < "A" || c0 > "Z") { return false; }
+  for (var i = 1; i < w.length; i++) {
+    var c = w.charAt(i);
+    var code = w.charCodeAt(i);
+    var letter = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || code > 191;
+    if (!letter && c !== "-" && c !== "'" && code !== 8217) { return false; }
+  }
+  return true;
+}
+
+// "Polack FP, Thomas SJ, Kitchin N, et al" or "Ioannidis JPA": a Vancouver author list.
+function vancouverAuthors(seg) {
+  if (seg.length === 0 || seg.length > 400) { return false; }
+  var parts = seg.split(",");
+  var names = 0;
+  for (var i = 0; i < parts.length; i++) {
+    var p = trimStr(parts[i]);
+    if (lower(p) === "et al" && i === parts.length - 1 && names > 0) { continue; }
+    var raw = p.split(" ");
+    var w = [];
+    for (var r = 0; r < raw.length; r++) { if (raw[r].length > 0) { w.push(raw[r]); } }
+    if (w.length < 2 || w.length > 5 || !isInitials(w[w.length - 1])) { return false; }
+    for (var j = 0; j < w.length - 1; j++) { if (!isSurnameWord(w[j])) { return false; } }
+    names++;
+  }
+  return names > 0;
+}
+
+// The title of a Vancouver line: the sentence after the author list.
+function vancouverTitle(line) {
+  var s = stripListMarker(trimStr(line));
+  var end = s.indexOf(". ");
+  if (end < 0 || !vancouverAuthors(s.slice(0, end))) { return null; }
+  var rest = s.slice(end + 2);
+  // "In: Book title" after the authors names the container, not the cited item
+  if (lower(rest.slice(0, 3)) === "in:") { return null; }
+  var t = titleSpan(rest);
+  if (t && startsLikeTitle(t) && contentTokens(t).length >= 2 && findDoi(t) === null) { return t; }
+  return null;
+}
+
+// The year a formatted reference line cites: an APA "(YYYY", else the last
+// free-standing year outside its DOI and links (Vancouver "2020;383", IEEE
+// ", 1979,"). null when there is none.
+function lineYear(s) {
+  var y = citedYearIn(s);
+  if (y) { return y; }
+  var words = s.split(" ");
+  var found = null;
+  for (var i = 0; i < words.length; i++) {
+    var w = words[i];
+    var lw = lower(w);
+    if (lw.indexOf("doi") >= 0 || lw.indexOf("http") >= 0 || lw.indexOf("/") >= 0 || lw.indexOf("arxiv") >= 0) { continue; }
+    for (var k = 0; k + 4 <= w.length; k++) {
+      if (isYearAt(w, k) && (k === 0 || !isDigit(w.charAt(k - 1))) &&
+          (k + 4 === w.length || !isDigit(w.charAt(k + 4)))) {
+        found = parseInt(w.slice(k, k + 4), 10);
+        k += 3;
+      }
+    }
+  }
+  return found;
+}
+
+// allowVancouver: reference-list parsing only. The prose reader
+// (referenceFromText) keeps to the quoted and APA rules, so a sentence such as
+// "Dr X. Then we ..." is never read as an author list and a title.
+function extractTitle(line, allowVancouver) {
   var s = String(line == null ? "" : line);
   // 1) quoted title (MLA): the first straight- or curly-quoted span
   var open = s.indexOf(String.fromCharCode(34));
@@ -339,6 +483,8 @@ function extractTitle(line) {
     }
     at = s.indexOf("(", at + 1);
   }
+  // 3) Vancouver: an author list of surnames and initials, then the title
+  if (allowVancouver) { return vancouverTitle(s); }
   return null;
 }
 
@@ -351,10 +497,11 @@ function extractTitle(line) {
 // rows). The reflow stitches wrapped lines back into whole references.
 //
 // It ONLY activates when the paste smells like wrapped formatted references:
-// at least one line carries an APA-style (year) marker AND at least one
-// non-empty line cannot be a reference start. Bare-DOI lists and bare-title
-// lists carry no year markers, so they never reflow — the advertised
-// line-per-ref inputs are untouched by construction.
+// at least one line carries an APA-style (year) marker or opens with
+// numbering ("[12]", "12. ") AND at least one non-empty line cannot be a
+// reference start. Bare-DOI lists and bare-title lists carry neither, so they
+// never reflow — the advertised line-per-ref inputs are untouched by
+// construction.
 //
 // A line STARTS a new reference when it opens with numbering ("[12]" or
 // "12. "), carries a (year) marker in its first 100 chars, or opens with the
@@ -362,9 +509,12 @@ function extractTitle(line) {
 // when that reference looks FINISHED (ends with ".", a DOI, or a URL) — an
 // author-list wrap ("Mishra, P., &" / "Koehler, M. J. (2006)...") therefore
 // keeps joining. A line that is nothing but a DOI/URL is absorbed into a
-// previous reference that lacks one. Section headers ("References",
-// "Bibliography") are dropped. Worst case two run-on references merge into
-// one row with an honest verdict; nothing crashes and nothing is invented.
+// previous reference that lacks one. A line that wrapped at a hyphen joins
+// the next with no space. A title-like line after a reference that already
+// ends in its DOI or link is a reference of its own, not a continuation.
+// Section headers ("References", "Bibliography") are dropped. Worst case two
+// run-on references merge into one row with an honest verdict; nothing
+// crashes and nothing is invented.
 
 function hasYearParenIn(s) {
   var i = s.indexOf("(");
@@ -376,7 +526,8 @@ function hasYearParenIn(s) {
   return false;
 }
 
-function looksLikeRefStart(line) {
+// "[12]" or "12. " at the start of a line: a numbered reference list.
+function numberedStart(line) {
   if (line.charAt(0) === "[") {
     var j = 1;
     var bd = 0;
@@ -386,7 +537,11 @@ function looksLikeRefStart(line) {
   var k = 0;
   var nd = 0;
   while (k < line.length && isDigit(line.charAt(k))) { k++; nd++; }
-  if (nd > 0 && nd <= 3 && line.charAt(k) === "." && line.charAt(k + 1) === " ") { return true; }
+  return nd > 0 && nd <= 3 && line.charAt(k) === "." && line.charAt(k + 1) === " ";
+}
+
+function looksLikeRefStart(line) {
+  if (numberedStart(line)) { return true; }
   if (hasYearParenIn(line.slice(0, 100))) { return true; }
   var c = line.indexOf(",");
   if (c > 0 && c <= 40) {
@@ -410,6 +565,37 @@ function endsRefish(s) {
   return findDoi(last) !== null;
 }
 
+// The last token is a DOI or a link: the reference is finished.
+function endsWithLink(s) {
+  var t = trimStr(s);
+  var sp = t.lastIndexOf(" ");
+  var last = sp >= 0 ? t.slice(sp + 1) : t;
+  return last.indexOf("http") === 0 || findDoi(last) !== null;
+}
+
+// Lines that trail a finished reference without being one (PubMed and web
+// reference tails).
+var TRAILERS = ["pmid", "pmcid", "epub", "available", "retrieved", "accessed", "cited", "[cited",
+  "isbn", "issn", "published", "online", "doi", "arxiv", "url"];
+
+function looksLikeOwnTitle(t) {
+  if (!startsLikeTitle(t) || contentTokens(t).length < 2) { return false; }
+  var lo = lower(t);
+  for (var i = 0; i < TRAILERS.length; i++) { if (lo.indexOf(TRAILERS[i]) === 0) { return false; } }
+  return true;
+}
+
+// A line that ends in a hyphen joins the next with no space. Between two
+// lowercase letters the hyphen is the line-break's ("the-" + "ory",
+// "jour-" + "nal.pmed") and goes; beside a digit or a capital it is the
+// text's own ("S0140-" + "6736(97)11096-0") and stays.
+function joinHyphen(cur, t) {
+  var before = cur.charAt(cur.length - 2);
+  var after = t.charAt(0);
+  var lowerPair = before >= "a" && before <= "z" && after >= "a" && after <= "z";
+  return lowerPair ? cur.slice(0, cur.length - 1) + t : cur + t;
+}
+
 function joinWrappedLines(lines) {
   var out = [];
   var cur = "";
@@ -421,13 +607,16 @@ function joinWrappedLines(lines) {
   for (var i = 0; i < lines.length; i++) {
     var t = trimStr(lines[i]);
     if (t.length === 0) { flush(); continue; }
-    var bare = lower(t);
-    if (bare.charAt(bare.length - 1) === ":") { bare = bare.slice(0, bare.length - 1); }
-    if (bare === "references" || bare === "bibliography" || bare === "works cited" || bare === "reference list") { continue; }
+    if (isHeaderLine(t)) { continue; }
     if (cur === "") { cur = t; continue; }
+    if (cur.charAt(cur.length - 1) === "-" && cur.length >= 2 && !isSpace(cur.charAt(cur.length - 2))) {
+      cur = joinHyphen(cur, t);
+      continue;
+    }
     var doiOnly = t.indexOf(" ") < 0 && findDoi(t) !== null;
     if (doiOnly && findDoi(cur) === null) { cur = cur + " " + t; continue; }
     if (looksLikeRefStart(t) && endsRefish(cur)) { flush(); cur = t; }
+    else if (endsWithLink(cur) && looksLikeOwnTitle(t)) { flush(); cur = t; }
     else { cur = cur + " " + t; }
   }
   flush();
@@ -435,15 +624,15 @@ function joinWrappedLines(lines) {
 }
 
 function reflowIfWrapped(lines) {
-  var anyYear = false;
+  var anyMarker = false;
   var anyContinuation = false;
   for (var i = 0; i < lines.length; i++) {
     var t = trimStr(lines[i]);
     if (t.length === 0) { continue; }
-    if (!anyYear && hasYearParenIn(t)) { anyYear = true; }
+    if (!anyMarker && (hasYearParenIn(t) || numberedStart(t))) { anyMarker = true; }
     if (!anyContinuation && !looksLikeRefStart(t)) { anyContinuation = true; }
   }
-  return anyYear && anyContinuation ? joinWrappedLines(lines) : lines;
+  return anyMarker && anyContinuation ? joinWrappedLines(lines) : lines;
 }
 
 function parseList(text) {
@@ -454,11 +643,14 @@ function parseList(text) {
     var line = trimStr(lines[i]);
     if (line.length === 0) { continue; }
     var doi = findDoi(line);
-    var title = extractTitle(line);
+    var title = extractTitle(line, true);
+    // the cited year rides only on a formatted reference whose title was read;
+    // a bare title line keeps no year (a year inside a title is not a citation)
+    var year = title ? lineYear(line) : null;
     // a DOI line only carries a title when the extraction is confident (it
     // feeds the DOI-title cross-check); a bare line falls back to whole-line
-    if (doi) { refs.push({ key: null, doi: doi, title: title, raw: line.slice(0, 240) }); }
-    else { refs.push({ key: null, doi: null, title: title || line, raw: line.slice(0, 240) }); }
+    if (doi) { refs.push({ key: null, doi: doi, title: title, year: year, raw: line.slice(0, 240) }); }
+    else { refs.push({ key: null, doi: null, title: title || line, year: year, raw: line.slice(0, 240) }); }
   }
   return refs;
 }
@@ -547,8 +739,8 @@ function parseThebib(text) {
     var body = stripLatex(chunk.slice(p));
     if (body.length > 0) {
       var bdoi = findDoi(body);
-      var btitle = extractTitle(body);
-      refs.push({ key: key, doi: bdoi || null, title: btitle || body, raw: body.slice(0, 240) });
+      var btitle = extractTitle(body, true);
+      refs.push({ key: key, doi: bdoi || null, title: btitle || body, year: btitle ? lineYear(body) : null, raw: body.slice(0, 240) });
     }
     start = next;
   }
@@ -572,8 +764,9 @@ function parseInput(text) {
 // arXiv id, or a title the APA / quoted-title rules can isolate (or the
 // "Title (Authors, 2017)" shape assistants write).
 
-// The arXiv id after "arxiv:" or an arxiv.org abs/pdf/html path, new style
-// (2201.11903, optional vN dropped), lowercased. Old-style ids are not read.
+// The arXiv id after "arxiv:" or an arxiv.org abs/pdf/html path, lowercased,
+// any vN dropped: new style (2201.11903) or old style (hep-th/9901001; math.GT/0309136
+// reads as math/0309136, since the subject class is not part of the id or its DOI).
 function arxivIdIn(text) {
   var s = lower(text);
   var marks = ["arxiv.org/abs/", "arxiv.org/pdf/", "arxiv.org/html/", "arxiv:"];
@@ -591,10 +784,31 @@ function arxivIdIn(text) {
         while (k < s.length && isDigit(s.charAt(k))) { k++; d2++; }
         if (d2 === 4 || d2 === 5) { return s.slice(j, k); }
       }
+      var old = oldArxivIdAt(s, j);
+      if (old) { return old; }
       at = s.indexOf(marks[m], at + 1);
     }
   }
   return null;
+}
+
+// An old-style arXiv id starting at s[j] (s lowercased): an archive of letters and
+// hyphens (hep-th, cond-mat, math), an optional two-letter subject class (.gt), a
+// slash and exactly seven digits. Returned without the class. null otherwise.
+function oldArxivIdAt(s, j) {
+  var k = j;
+  while (k < s.length && ((s.charAt(k) >= "a" && s.charAt(k) <= "z") || s.charAt(k) === "-")) { k++; }
+  if (k - j < 2 || s.charAt(j) === "-") { return null; }
+  var archive = s.slice(j, k);
+  if (s.charAt(k) === "." && s.charAt(k + 3) === "/" &&
+      s.charAt(k + 1) >= "a" && s.charAt(k + 1) <= "z" && s.charAt(k + 2) >= "a" && s.charAt(k + 2) <= "z") {
+    k += 3;
+  }
+  if (s.charAt(k) !== "/") { return null; }
+  var n0 = k + 1;
+  var e = n0;
+  while (e < s.length && isDigit(s.charAt(e))) { e++; }
+  return e - n0 === 7 ? archive + "/" + s.slice(n0, e) : null;
 }
 
 // The cited year: the first "(YYYY" in the line. null when there is none.
@@ -819,7 +1033,8 @@ function dataciteTitleSearch(title, year, get) {
   }
   var q = "titles.title:" + String.fromCharCode(34) + trimStr(t) + String.fromCharCode(34) +
     (year ? " AND publicationYear:" + year : "");
-  var url = DATACITE + "/dois?page%5Bsize%5D=5&fields%5Bdois%5D=doi,titles,publicationYear&query=" +
+  // sort=relevance puts exact titles first (the default order is not relevance)
+  var url = DATACITE + "/dois?page%5Bsize%5D=5&sort=relevance&fields%5Bdois%5D=doi,titles,publicationYear&query=" +
     encodeURIComponent(q);
   return (get || getJson)(url);
 }
@@ -994,6 +1209,44 @@ function provenanceLine(pe) {
   return noun + " via Crossref — " + credit;
 }
 
+// The ONE place a marking's wording lives (1.6.2): the /check row and watchlist, the Word
+// and Docs panes, the extension and the Zotero plugin all render THESE strings, by the
+// badge's rule (routes/citestamped.ts). "by the publisher" only when the publisher deposited
+// the notice. A notice Retraction Watch deposited names nobody in the label, and the
+// provenance line credits it; a marking with no source at all (a RETRACTED: title, a bare
+// OpenAlex flag, a relation that names no depositor) names nobody, and markingOrigin says
+// where it came from. An expression of concern is never "retracted".
+var MARK_PHRASES = {
+  retraction: "marked retracted", retration: "marked retracted", withdrawal: "withdrawn",
+  removal: "removed", partial_retraction: "partially retracted",
+  expression_of_concern: "flagged with an expression of concern"
+};
+var STATUS_EVENT_TYPES = {
+  "marked-retracted": "retraction", "withdrawn": "withdrawal", "removed": "removal",
+  "partially-retracted": "partial_retraction", "expression-of-concern": "expression_of_concern"
+};
+function markingLabel(type, source) {
+  var phrase = MARK_PHRASES[lower(type || "")] || "marked retracted";
+  return phrase + (lower(source || "") === "publisher" ? " by the publisher" : "") + " (best-effort)";
+}
+// A verdict's marking label (a marked verdict with no event is a retraction).
+function markedLabel(v) {
+  var pe = v && v.publisherEvent;
+  return markingLabel((pe && pe.type) ? pe.type : "retraction", pe ? pe.source : null);
+}
+// A watchlist item's label from its stored status, or null for a status that is no marking.
+function statusLabel(status, pe) {
+  var t = STATUS_EVENT_TYPES[status];
+  return t ? markingLabel(t, pe ? pe.source : null) : null;
+}
+// Where a marking that credits no one came from; "" when the provenance line already says.
+function markingOrigin(v) {
+  if (!v || v.retracted !== "marked" || provenanceLine(v.publisherEvent)) { return ""; }
+  if (v.retractedVia === "openalex-flag") { return "Marking from OpenAlex's record of this work; no retraction notice was found on its Crossref record."; }
+  if (v.retractedVia === "crossref-title") { return "Marking read from the title of this work's Crossref record; no retraction notice is linked to it."; }
+  return "Retraction notice via Crossref; the record does not say who deposited it.";
+}
+
 // Fold a publisher event onto a verdict: always record publisherEvent{type,
 // notice, source}; only the MARKED subset flips retracted to "marked". A soft
 // class (expression_of_concern) leaves retracted as-is but still surfaces the
@@ -1002,6 +1255,20 @@ function applyPublisherEvent(v, ev) {
   if (!ev) { return; }
   v.publisherEvent = { type: ev.type, notice: ev.notice || null, source: ev.source || null };
   if (MARKED_EVENTS[ev.type]) { v.retracted = "marked"; v.retractedVia = ev.via; }
+}
+
+// The reference's own DOI is what resolved (not a title search that found the
+// work under another DOI).
+function citedDoiResolved(v) {
+  var via = v ? v.resolvedVia : null;
+  return via === "openalex-doi" || via === "crossref-doi" || via === "datacite-doi" || via === "doi-registration";
+}
+
+// The DOI to write when a reference is exported: the one the reference cites
+// when that DOI resolved, else the record's.
+function exportDoi(v) {
+  if (v && v.ref && v.ref.doi && citedDoiResolved(v)) { return lower(v.ref.doi); }
+  return (v && v.work && v.work.doi) ? v.work.doi : null;
 }
 
 function emptyVerdict(ref) {
@@ -1016,6 +1283,7 @@ function emptyVerdict(ref) {
     suggestion: null,
     unchecked: false,
     noMatch: false,
+    nothingToCheck: false,
     doiAgency: null,
     doiUnregistered: false,
     refutations: 0,
@@ -1055,11 +1323,27 @@ function checkOne(ref, opts) {
     // fingerprint on our own infrastructure. has-refutations is surfaced only
     // in an interactive, user-present check.
     if (opts.noGraph) { return Promise.resolve(); }
-    var canonId = v.work && v.work.doi ? doiUrl(v.work.doi) : null;
-    if (!canonId) { return Promise.resolve(); }
+    var recordId = v.work && v.work.doi ? doiUrl(v.work.doi) : null;
+    if (!recordId) { return Promise.resolve(); }
+    // The DOI the reference cites, when that DOI is what resolved: signed edges
+    // hang on the DOI people cite, and a database can answer for it under
+    // another DOI of the same work (a Zenodo version under its concept record,
+    // a publisher alias). The record's own DOI is asked only when the graph has
+    // nothing under the cited one. v.work.doi stays the record's DOI (the
+    // watchlist keys on it to meet the delta feed).
+    var cited = ref.doi && citedDoiResolved(v) ? doiUrl(lower(ref.doi)) : null;
+    var canonId = cited || recordId;
+    var alt = cited && lower(cited) !== lower(recordId) ? recordId : null;
     var reuse = !!(unfoundGraph && ref.doi && lower(canonId) === lower(doiUrl(ref.doi)));
     if (reuse) { v.graphSigned = 0; v.graphInferred = 0; }
-    return (reuse ? Promise.resolve(unfoundGraph) : graphFor(site, canonId)).then(function (g) {
+    var lookup = reuse ? Promise.resolve(unfoundGraph) : graphFor(site, canonId);
+    return lookup.then(function (g) {
+      if (alt && (!g || g.__status === 404 || !g.edges || g.edges.length === 0)) {
+        canonId = alt;
+        return graphFor(site, alt);
+      }
+      return g;
+    }).then(function (g) {
       if (!g || g.__status === 404 || !g.edges) { return; }
       var target = g.id || canonId;
       var srcs = [];
@@ -1106,35 +1390,42 @@ function checkOne(ref, opts) {
     // a registry-mode candidate carries the search it came from (src), so one
     // pass can settle over Crossref's and DataCite's answers together
     function viaFor(c) { return (c && c.src) || via; }
+    // years between a candidate and the cited year (0 when either is unknown)
+    function yearGap(c) {
+      var py = c ? c.publication_year : null;
+      return (ref.year && py) ? Math.abs(py - ref.year) : 0;
+    }
+    // Ties go to an EXACT title, then to the cited year: token overlap scores
+    // "Is Attention All You Need?" (2025) as high as "Attention Is All You
+    // Need" itself, and a 2025 re-deposit of a 2017 paper shares its title.
     var best = null;
     var bestScore = 0;
+    var bestExact = false;
     var bestContain = null;
     var bestContainScore = 0;
     for (var i = 0; i < results.length; i++) {
       var cand = results[i];
       var candTitle = cand.title || cand.display_name || "";
       var sc = titleScore(ref.title, candTitle);
-      if (sc > bestScore) { bestScore = sc; best = cand; }
+      var ex = sameTitle(ref.title, candTitle);
+      if (sc > 0 && (!best || (ex && !bestExact) ||
+          (ex === bestExact && (sc > bestScore || (sc === bestScore && yearGap(cand) < yearGap(best)))))) {
+        bestScore = sc; best = cand; bestExact = ex;
+      }
       var cn = titleContainment(ref.title, candTitle);
       if (cn > bestContainScore) { bestContainScore = cn; bestContain = cand; }
     }
     var rounded = Math.round(bestScore * 100) / 100;
     if (rounded > v.matchScore) { v.matchScore = rounded; }
-    var exact = false;
-    if (best) {
-      var bn = normTitle(best.title || best.display_name || "");
-      exact = bn.length > 0 && bn === normTitle(ref.title);
-    }
+    var exact = bestExact;
     if (reg && strict) {
       // Registry mode reads EVERY exact-title candidate, not just the first:
       // exact twins are common (an NEJM letter reuses its article's title, a
       // preprint and its journal version share one), so the cited year picks
       // between them, and two that nothing tells apart stay "confirm".
-      var wanted = normTitle(ref.title);
       var exacts = [];
       for (var x = 0; x < results.length; x++) {
-        var xn = normTitle(results[x].title || results[x].display_name || "");
-        if (xn.length > 0 && xn === wanted) { exacts.push(results[x]); }
+        if (sameTitle(ref.title, results[x].title || results[x].display_name || "")) { exacts.push(results[x]); }
       }
       if (exacts.length > 0) {
         var same = [];
@@ -1159,6 +1450,8 @@ function checkOne(ref, opts) {
           return Promise.resolve();
         }
         if (pool2.length > 1) {
+          // earliest first: an original preprint before its later re-deposits
+          pool2.sort(function (a, b) { return (a.publication_year || 9999) - (b.publication_year || 9999); });
           var dois = [];
           for (var z = 0; z < pool2.length && z < 3; z++) {
             var zd = pool2[z].doi ? lower(stripDoiPrefix(pool2[z].doi)) : null;
@@ -1180,11 +1473,51 @@ function checkOne(ref, opts) {
         exact = false;
       }
     }
-    if (best && (strict ? exact : bestScore >= 0.7)) {
+    // an exact title clears either gate (a hyphen a PDF line break removed can
+    // leave token overlap under 0.7 for the very same title)
+    if (best && (strict ? exact : (exact || bestScore >= 0.7))) {
       v.resolved = true;
       v.resolvedVia = viaFor(best);
       v.suggestion = null;
       v.work = workFromOpenAlex(best);
+      // The title matches, but the record is from more than a year away from
+      // the cited year (a re-deposit, a later edition, a namesake): confirm,
+      // never a clean resolve, so it is not exported. Registry mode settles
+      // years above, over every exact candidate.
+      if (!reg && yearGap(best) > 1) {
+        v.weakMatch = true;
+        v.notes.push("the cited title matches " + (v.work && v.work.doi ? v.work.doi : "a work") +
+          ", published " + best.publication_year + ", but the citation says " + ref.year +
+          " — confirm it is the work meant");
+        return Promise.resolve();
+      }
+      // Several works share this exact title and nothing in the citation tells
+      // them apart (no cited year, or more than one from it): confirm, earliest
+      // named first, never a clean resolve to whichever came first. The 2017
+      // "Attention Is All You Need" sits among 2025 re-deposits of that title.
+      if (!reg && bestExact) {
+        var twins = [];
+        var seen = {};
+        for (var tw = 0; tw < results.length; tw++) {
+          var tc = results[tw];
+          var td = tc.doi ? lower(stripDoiPrefix(tc.doi)) : null;
+          if (!td || seen[td] || yearGap(tc) !== yearGap(best)) { continue; }
+          if (!sameTitle(ref.title, tc.title || tc.display_name || "")) { continue; }
+          seen[td] = 1;
+          twins.push(tc);
+        }
+        if (twins.length > 1) {
+          twins.sort(function (x, y) { return (x.publication_year || 9999) - (y.publication_year || 9999); });
+          var named = [];
+          for (var tn = 0; tn < twins.length && tn < 3; tn++) {
+            named.push(lower(stripDoiPrefix(twins[tn].doi)) + (twins[tn].publication_year ? " (" + twins[tn].publication_year + ")" : ""));
+          }
+          v.weakMatch = true;
+          v.work = workFromOpenAlex(twins[0]);
+          v.notes.push("several works share this exact title (" + named.join(", ") + ") — confirm which one is meant");
+          return Promise.resolve();
+        }
+      }
       if (v.work && v.work.is_retracted) { v.retracted = "marked"; v.retractedVia = "openalex-flag"; }
       // a DataCite-found work has no Crossref record to read a notice from
       if (v.work && v.work.doi && viaFor(best) !== "datacite-title") { return retractionFromCrossref(v.work.doi); }
@@ -1367,7 +1700,9 @@ function checkOne(ref, opts) {
     v.doiUnregistered = true;
     var where = "not registered with any DOI agency (doi.org)";
     if (!ref.title) {
-      v.notes.push("this DOI is " + where + ", and the reference has no title to search" +
+      // say "no title could be read", never "has no title": a line can carry a
+      // title in a shape the parser does not read
+      v.notes.push("this DOI is " + where + ", and no title could be read from the reference to search" +
         (reg ? " (checked " + new Date().toISOString().slice(0, 10) + ")" : ""));
       return Promise.resolve();
     }
@@ -1507,7 +1842,12 @@ function checkOne(ref, opts) {
       }
     });
   } else {
+    // Nothing was looked up, so nothing may be concluded (1.6.1): never the
+    // hard does-not-resolve verdict (a hard negative requires a DOI that no
+    // agency registered), and never "unchecked" either, whose copy says "try
+    // again" when no retry can help an entry with nothing to look up.
     resolveStep = Promise.resolve();
+    v.nothingToCheck = true;
     v.notes.push("no DOI or title to check");
   }
 
@@ -1540,6 +1880,7 @@ function deriveStatus(v) {
   if (!v.resolved) {
     if (v.unchecked) { return "unchecked"; }
     if (v.noMatch) { return "no-match"; }
+    if (v.nothingToCheck) { return "nothing-to-check"; }
     return "does-not-resolve";
   }
   if (v.retracted === "marked") { return "marked-retracted"; }
@@ -1581,6 +1922,10 @@ function pool(items, limit, worker) {
 function checkBibliography(text, opts) {
   opts = opts || {};
   var refs = parseInput(text);
+  // non-empty input lines, so a renderer can say "N lines read as M references"
+  var lineCount = 0;
+  var inLines = String(text == null ? "" : text).split(String.fromCharCode(10));
+  for (var li = 0; li < inLines.length; li++) { if (trimStr(inLines[li]).length > 0) { lineCount++; } }
   var limit = opts.concurrency || 4;
   return pool(refs, limit, function (ref) { return checkOne(ref, opts); }).then(function (verdicts) {
     var counts = { resolved: 0, uncertain: 0, unresolved: 0, noMatch: 0, unchecked: 0, withRefutations: 0, withFailedReplications: 0, retracted: 0 };
@@ -1595,7 +1940,7 @@ function checkBibliography(text, opts) {
       // answered but did not match is its own bucket too — a result, not an
       // outage, and still not the hard "does not resolve".
       if (!v.resolved && v.unchecked) { counts.unchecked++; }
-      else if (!v.resolved && v.noMatch) { counts.noMatch++; }
+      else if (!v.resolved && (v.noMatch || v.nothingToCheck)) { counts.noMatch++; }
       else if (v.weakMatch || v.titleMismatch) { counts.uncertain++; }
       else if (v.resolved) { counts.resolved++; }
       else { counts.unresolved++; }
@@ -1607,6 +1952,7 @@ function checkBibliography(text, opts) {
       version: VERSION,
       checkedAt: new Date().toISOString(),
       total: refs.length,
+      lines: lineCount,
       counts: counts,
       verdicts: verdicts
     };
@@ -1622,7 +1968,12 @@ window.CiteStampCheck = {
   checkOne: checkOne,
   checkBibliography: checkBibliography,
   provenanceLine: provenanceLine,
+  markingLabel: markingLabel,
+  markedLabel: markedLabel,
+  statusLabel: statusLabel,
+  markingOrigin: markingOrigin,
   referenceFromText: referenceFromText,
-  referenceFromLink: referenceFromLink
+  referenceFromLink: referenceFromLink,
+  exportDoi: exportDoi
 };
 })();

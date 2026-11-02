@@ -1,11 +1,11 @@
-/* CiteStamp picker v1.2.0 — citation search at the cursor.
+/* CiteStamp picker v1.2.1 — citation search at the cursor.
    Docs + live demo: https://citestamp.com/write
    Search is client-direct to OpenAlex; staged claims stay in this browser. */
 (function () {
 "use strict";
 if (window.CiteStampPicker) { return; }
 
-var VERSION = "1.2.0";
+var VERSION = "1.2.1";
 var NL = String.fromCharCode(10);
 var OPENALEX = "https://api.openalex.org";
 var CROSSREF = "https://api.crossref.org";
@@ -215,12 +215,27 @@ function searchCrossref(query, mailto, perPage) {
   }).catch(function () { return []; });
 }
 
+// OpenAlex relevance alone can bury the classic a researcher means under a namesake
+// with the same title words ("prospect theory": Kahneman and Tversky 1979 came 13th).
+// Ask for a wider page and weigh relevance by citations on a log scale, so an exact
+// title with few citations still leads (measured 2026-11-01: 8 classic queries, none
+// worse, two lifted to first; 4 exact titles with 1-35 citations kept first).
+function rankWorks(rows) {
+  var scored = rows.map(function (w, i) {
+    var weight = Math.log(10 + (w.cited_by_count || 0)) / Math.LN10;
+    return { w: w, i: i, s: (w.relevance_score || 0) * weight };
+  });
+  scored.sort(function (a, b) { return (b.s - a.s) || (a.i - b.i); });
+  return scored.map(function (x) { return x.w; });
+}
+
 function searchWorks(query, opts) {
   opts = opts || {};
   var mailto = opts.mailto || MAILTO;
   var perPage = opts.perPage || 8;
   var url = OPENALEX + "/works?search=" + encodeURIComponent(query) +
-    "&per_page=" + perPage + "&select=id,doi,title,display_name,publication_year,authorships" +
+    "&per_page=" + Math.max(perPage, 25) +
+    "&select=id,doi,title,display_name,publication_year,authorships,cited_by_count,relevance_score" +
     "&mailto=" + encodeURIComponent(mailto);
   return fetch(url).then(function (r) {
     if (!r.ok) { return null; }
@@ -228,7 +243,7 @@ function searchWorks(query, opts) {
   }).then(function (data) {
     // OpenAlex returns an error body (no results) when out of budget; on any
     // miss or empty hit, fall through to Crossref so search keeps working.
-    if (data && data.results && data.results.length) { return data.results; }
+    if (data && data.results && data.results.length) { return rankWorks(data.results).slice(0, perPage); }
     return searchCrossref(query, mailto, perPage);
   }).catch(function () {
     return searchCrossref(query, mailto, perPage);

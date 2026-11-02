@@ -167,23 +167,28 @@ function addTo(state, verdict) {
   var key = keyFor(verdict);
   if (!key) { return { state: state, item: null, added: false }; }
   var existing = state.items[key];
+  // Enrolment never touches a key already on the list. Re-adding a paper whose
+  // Crossref record momentarily lacks its retraction relation would otherwise
+  // reset lastStatus and retracted while publisherEvent survived, silently
+  // clearing the flag. The monitor (recheck, applyDelta) owns freshness.
+  if (existing) { return { state: state, item: existing, added: false }; }
   var now = nowIso();
   var item = {
     citedDoi: citedFor(verdict) || key,
     title: titleFor(verdict),
-    addedAt: (existing && existing.addedAt) ? existing.addedAt : now,
+    addedAt: now,
     lastCheckedAt: now,
     lastStatus: (verdict && verdict.status) || monitorStatus(verdict),
     resolved: !!(verdict && verdict.resolved),
     retracted: (verdict && verdict.retracted) || "unknown",
     titleMismatch: !!(verdict && verdict.titleMismatch),
-    publisherEvent: (verdict && verdict.publisherEvent) || (existing && existing.publisherEvent) || null,
+    publisherEvent: (verdict && verdict.publisherEvent) || null,
     engineFixed: true,
     verdictHash: ""
   };
   item.verdictHash = hashVerdict(item);
   state.items[key] = item;
-  return { state: state, item: item, added: !existing };
+  return { state: state, item: item, added: true };
 }
 
 // ---- pure delta intersection ----------------------------------------------

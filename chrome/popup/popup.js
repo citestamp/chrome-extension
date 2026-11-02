@@ -21,12 +21,14 @@ var currentTitle = null;
 // Statuses that stand as a publisher-event flag on a watched item (never "ok"
 // or "unchecked"). Copy stays inside the shipped taxonomy — publisher events
 // stated AS publisher events.
+// A marking's label comes from the vendored engine (statusLabel, check core 1.6.2), which says
+// "by the publisher" only when the publisher deposited the notice; these are the fallbacks.
 var FLAGGED = {
-  "marked-retracted": "marked retracted by the publisher (best-effort)",
-  "withdrawn": "withdrawn",
-  "removed": "removed",
-  "partially-retracted": "partially retracted",
-  "expression-of-concern": "expression of concern",
+  "marked-retracted": "marked retracted (best-effort)",
+  "withdrawn": "withdrawn (best-effort)",
+  "removed": "removed (best-effort)",
+  "partially-retracted": "partially retracted (best-effort)",
+  "expression-of-concern": "flagged with an expression of concern (best-effort)",
   "doi-title-mismatch": "DOI / title mismatch",
   "does-not-resolve": "no longer resolves",
 };
@@ -167,7 +169,10 @@ async function render(doi) {
   var data = await r.json();
   setCurrentPaper(doi, data.title || null);
   var signed = data.edges.filter(function (e) { return e.tier === "asserted"; }).length;
-  var inferred = data.edges.length - signed;
+  // the paper page's count, every inferred tier (paper_total); older answers
+  // carry only the drawn edges, capped at 100
+  var hasTotal = typeof data.paper_total === "number";
+  var inferred = hasTotal ? Math.max(0, data.paper_total - signed) : data.edges.length - signed;
 
   $("status").textContent = "";
   var heading = data.title || shortId(data.id);
@@ -185,7 +190,11 @@ async function render(doi) {
   var fredOk = typedEdges.filter(function (e) { return e.predicate === "supports"; }).length;
   if (fredFailed) chips.appendChild(el("span", "chip typed", fredFailed + " failed replication" + (fredFailed === 1 ? "" : "s") + " (FORRT)"));
   if (fredOk) chips.appendChild(el("span", "chip typed", fredOk + " successful replication" + (fredOk === 1 ? "" : "s") + " (FORRT)"));
-  if (data.truncated) chips.appendChild(el("span", "chip", "showing first 100"));
+  if (hasTotal && data.paper_total > data.edges.length) {
+    chips.appendChild(el("span", "chip", "listing " + data.edges.length + " here; all " + data.paper_total.toLocaleString("en-US") + " on the paper page"));
+  } else if (data.truncated) {
+    chips.appendChild(el("span", "chip", "showing first 100"));
+  }
 
   renderEdges(edgesBox, data, signedEdges, "signed", "signed — a named researcher stands behind these");
   renderEdges(edgesBox, data, typedEdges, "typed", "replication outcomes — coded by the forrt replication database, inferred tier");
@@ -317,8 +326,10 @@ function refreshWatchButton() {
   btn.hidden = !(currentDoi && window.CiteStampWatchlist);
 }
 
-function statusLabel(status) {
-  return FLAGGED[status] || status || "changed";
+function statusLabel(status, publisherEvent) {
+  var C = window.CiteStampCheck;
+  var marked = (C && C.statusLabel) ? C.statusLabel(status, publisherEvent) : null;
+  return marked || FLAGGED[status] || status || "changed";
 }
 
 async function renderWatchlist() {
@@ -371,7 +382,7 @@ function watchRow(it) {
   body.appendChild(el("div", "wl-item-title", it.title || it.citedDoi || it.doi));
   var meta = el("div", "wl-item-meta");
   // A non-flagged item is simply being watched. Never invent a verdict for it.
-  meta.appendChild(el("span", flagged ? "wl-status" : "wl-status-ok", flagged ? statusLabel(it.lastStatus) : "watching"));
+  meta.appendChild(el("span", flagged ? "wl-status" : "wl-status-ok", flagged ? statusLabel(it.lastStatus, it.publisherEvent) : "watching"));
   meta.appendChild(document.createTextNode(" · " + (it.citedDoi || it.doi)));
   body.appendChild(meta);
   // Who the retraction record came from, when Crossref told us. Wording comes

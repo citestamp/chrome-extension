@@ -4,7 +4,8 @@ These files are the **hosted cores, vendored into the extension**, so the Chrome
 MV3 listing can ship without remotely-hosted code. They are produced by
 `extension/chrome/build-vendor.mjs` from the canonical source (the
 `export const <NAME>_JS = \`…\`` template literal in each `the served client scripts on citestamp.com`)
-and are **byte-identical** to what citestamp.com serves.
+and are **byte-identical** to what citestamp.com serves at the moment they are packed
+(`--check` says whether they still are).
 
 | file | global | source |
 |---|---|---|
@@ -71,7 +72,9 @@ node extension/chrome/build-vendor.mjs           # rewrite vendor/*.js from sour
 node extension/chrome/build-vendor.mjs --check   # exit 1 if vendor is stale
 ```
 
-`--check` is in the test sweep. Run the writer again right before packing the
+`--check` is not part of the service's test suite, on purpose: a service deploy
+never waits on a client release. It runs at packing, and a failure stops the
+pack. Run the writer again right before packing the
 `.zip` for CWS. A change to a served core that does not regenerate these files is
 a silent divergence between what the web loads and what the extension ships.
 

@@ -26,17 +26,20 @@ Data flow (every call the extension makes; the same list as https://citestamp.co
   the paper page, graph view, and ORCID claim flow on citestamp.com.
 - On an Overleaf project, the bibliography check sends each reference's DOI or
   title from your browser to Crossref, DataCite and OpenAlex, a DOI none of them
-  holds to doi.org, and resolved identifiers to the public graph endpoint. The
-  .bib file and the manuscript are never sent anywhere as a document.
+  holds to doi.org, and resolved identifiers to the public graph endpoint. When a
+  title matches a work from a different year, Crossref is asked again inside the
+  cited year with the rest of that reference (authors, year and venue). The .bib
+  file and the manuscript are never sent anywhere as a document.
 - The Pro `@cite` picker searches Crossref and OpenAlex with what you type.
 - The daily watchlist re-check asks Crossref, DataCite and OpenAlex directly and
   sends nothing about your list to CiteStamp. With a Pro key it instead
-  downloads one shared file of publisher notices from api.citestamp.com, and the
-  key is the only thing it sends. A Pro key also goes to api.citestamp.com to
-  check your plan.
+  downloads one shared file of publisher notices from api.citestamp.com, and all
+  it sends is the key and the date of its last download. A Pro key also goes to
+  api.citestamp.com to check your plan.
 - On claude.ai and gemini.google.com it checks references only when you click
-  for it: each DOI or title goes to Crossref, DataCite and doi.org, and a DOI
-  that resolves also goes to the public graph endpoint.
+  for it: each DOI or title goes to Crossref, DataCite and doi.org (with the
+  same different-year re-check at Crossref), and a DOI that resolves also goes
+  to the public graph endpoint.
 
 No analytics, no history collection, **no remote code anywhere in the
 package**, every core is vendored and loaded from disk. The detect/popup path

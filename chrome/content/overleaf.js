@@ -811,6 +811,7 @@
       // on window.CiteStampCheck, which this content script also loads.
       var CC = window.CiteStampCheck;
       var prov = (CC && CC.provenanceLine) ? CC.provenanceLine(v.publisherEvent) : "";
+      if (!prov && CC && CC.markingOrigin) { prov = CC.markingOrigin(v); }
       if (prov) {
         var pv = document.createElement("div");
         pv.textContent = prov;
@@ -835,8 +836,12 @@
     if (v.status === "does-not-resolve") { return "does not resolve to a known work"; }
     if (v.status === "unchecked") { return "couldn't check — lookup source unavailable, try again"; }
     if (v.status === "no-match") { return "no confident match in the title search — not verified"; }
+    if (v.status === "nothing-to-check") { return "no DOI or title to check — not verified"; }
     if (v.status === "doi-title-mismatch") { return "this DOI resolves, but to a different work than the cited title — check which one you meant"; }
-    if (v.status === "marked-retracted") { return "marked retracted by the publisher (best-effort)"; }
+    if (v.status === "marked-retracted") {
+      var CK = window.CiteStampCheck;
+      return (CK && CK.markedLabel) ? CK.markedLabel(v) : "marked retracted (best-effort)";
+    }
     if (v.status === "has-refutations") {
       return v.refutations + (v.refutations === 1 ? " recorded refutation" : " recorded refutations");
     }

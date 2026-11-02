@@ -303,7 +303,7 @@ async function fetchCounts(doi) {
   var hit = got[key];
   if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit;
 
-  var entry = { ts: Date.now(), found: false, signed: 0, inferred: 0, truncated: false, title: null };
+  var entry = { ts: Date.now(), found: false, signed: 0, inferred: 0, total: 0, atLeast: false, truncated: false, title: null };
   try {
     var r = await fetch(graphUrl(doi));
     if (r.ok) {
@@ -314,6 +314,16 @@ async function fetchCounts(doi) {
       for (var i = 0; i < g.edges.length; i++) {
         if (g.edges[i].tier === "asserted") entry.signed++;
         else entry.inferred++;
+      }
+      // The paper page's count, every tier (graph API paper_total, 2026-10-27). The
+      // edge list is capped at 100 and leaves out the OpenAlex snapshot, so an
+      // older API's answer is only a floor: said "at least" when it was cut.
+      if (typeof g.paper_total === "number") {
+        entry.total = g.paper_total;
+        entry.atLeast = false;
+      } else {
+        entry.total = entry.signed + entry.inferred;
+        entry.atLeast = entry.truncated;
       }
     }
   } catch (e) {
@@ -335,8 +345,10 @@ async function onDoi(doi, tabId) {
     return;
   }
   var c = await fetchCounts(doi);
-  var total = c.signed + c.inferred;
-  var text = !c.found ? "0" : total > 99 || c.truncated ? "99+" : String(total);
+  // an entry cached by 1.0.8 carries no total
+  var total = typeof c.total === "number" ? c.total : c.signed + c.inferred;
+  var atLeast = typeof c.total === "number" ? !!c.atLeast : !!c.truncated;
+  var text = !c.found ? "0" : total > 99 ? "99+" : atLeast ? total + "+" : String(total);
   chrome.action.setBadgeBackgroundColor({
     tabId: tabId,
     color: c.found && total > 0 ? "#9c6e1f" : "#5d6675",
@@ -345,7 +357,8 @@ async function onDoi(doi, tabId) {
   chrome.action.setTitle({
     tabId: tabId,
     title: c.found
-      ? "CiteStamp — " + total + " recorded claims (" + c.signed + " signed)"
+      ? "CiteStamp — " + (atLeast ? "at least " : "") + total.toLocaleString("en-US") +
+        " recorded claim" + (total === 1 ? "" : "s") + " (" + c.signed + " signed)"
       : "CiteStamp — detected " + doi + ", not in the graph yet",
   });
 }
