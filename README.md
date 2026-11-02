@@ -63,8 +63,9 @@ the user re-accepts).
 
 - **Finding references** is the engine's job (`CiteStampCheck.referenceFromText`
   / `referenceFromLink`): a line is a reference when it carries a DOI, an arXiv
-  id, or a title the APA / quoted-title / "Title (Authors, Year)" rules isolate;
-  prose is never sent to a title search. Only doi.org and arxiv.org links are
+  id, or a title the APA / quoted-title / "Title (Authors, Year)" rules isolate.
+  A quoted title needs three or more content words, or two beside a cited year;
+  a line with none of these is never sent to a search. Only doi.org and arxiv.org links are
   read as identifiers. The script reads `li, p, td, dd, blockquote` generically,
   skipping editable regions (the composer), code, nav, header, footer and forms,
   so it does not depend on either site's markup.

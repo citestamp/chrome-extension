@@ -1,4 +1,4 @@
-/* CiteStamp citation health v1.6.4 — checked in your browser.
+/* CiteStamp citation health v1.6.5 — checked in your browser.
    Docs + live tool: https://citestamp.com/check
    Resolution is client-direct to OpenAlex, Crossref and DataCite, and to
    doi.org for a DOI none of them holds (registry mode: Crossref, DataCite
@@ -8,7 +8,7 @@
 "use strict";
 if (window.CiteStampCheck) { return; }
 
-var VERSION = "1.6.4";
+var VERSION = "1.6.5";
 var OPENALEX = "https://api.openalex.org";
 var CROSSREF = "https://api.crossref.org";
 var DATACITE = "https://api.datacite.org";
@@ -168,6 +168,74 @@ function titleContainment(query, cand) {
     if (setC[tq[j]] && !seen[tq[j]]) { inter++; seen[tq[j]] = 1; }
   }
   return inter / tq.length;
+}
+
+// A record's title in the forms it gets cited: the main title, and the main
+// title with its subtitle. Crossref and DataCite keep a subtitle apart from
+// the title (10.1177/0956797610383437 is title "Power Posing", subtitle "Brief
+// Nonverbal Displays Affect Neuroendocrine Levels and Risk Tolerance"), and a
+// citation usually gives both. A subtitle the title already carries adds no form.
+function titleForms(title, subtitle) {
+  var forms = [];
+  var t = String(title == null ? "" : title);
+  if (t.length === 0) { return forms; }
+  forms.push(t);
+  var st = String(subtitle == null ? "" : subtitle);
+  var ns = normTitle(st);
+  if (ns.length > 0 && normTitle(t).indexOf(ns) < 0) { forms.push(t + ": " + st); }
+  return forms;
+}
+
+// The title forms of a search candidate or a resolved work.
+function formsOf(c) {
+  return c ? titleForms(c.title || c.display_name || "", c.subtitle || null) : [];
+}
+
+// The best titleScore of a cited title against any form.
+function scoreAmong(cited, forms) {
+  var best = 0;
+  for (var i = 0; i < forms.length; i++) {
+    var s = titleScore(cited, forms[i]);
+    if (s > best) { best = s; }
+  }
+  return best;
+}
+
+function sameAmong(cited, forms) {
+  for (var i = 0; i < forms.length; i++) { if (sameTitle(cited, forms[i])) { return true; } }
+  return false;
+}
+
+function containAmong(cited, forms) {
+  var best = 0;
+  for (var i = 0; i < forms.length; i++) {
+    var c = titleContainment(cited, forms[i]);
+    if (c > best) { best = c; }
+  }
+  return best;
+}
+
+// A record's main title and subtitle from DataCite's titles array: the main
+// title is the first entry with no titleType, the subtitle the first entry
+// typed Subtitle (an alternative or translated title is neither).
+function dataciteTitles(a) {
+  var ts = (a && a.titles) || [];
+  var main = null;
+  var sub = null;
+  for (var i = 0; i < ts.length; i++) {
+    var e = ts[i] || {};
+    if (!e.title) { continue; }
+    var tt = lower(e.titleType || "");
+    if (!tt && main === null) { main = String(e.title); }
+    else if (tt === "subtitle" && sub === null) { sub = String(e.title); }
+  }
+  if (main === null && ts[0] && ts[0].title) { main = String(ts[0].title); }
+  return { title: main, subtitle: sub };
+}
+
+// The first subtitle of a Crossref record (an array of strings), or null.
+function crossrefSubtitle(m) {
+  return (m && m.subtitle && m.subtitle[0]) ? String(m.subtitle[0]) : null;
 }
 
 // ---- parsers --------------------------------------------------------------
@@ -439,7 +507,12 @@ function lineYear(s) {
 // allowVancouver: reference-list parsing only. The prose reader
 // (referenceFromText) keeps to the quoted and APA rules, so a sentence such as
 // "Dr X. Then we ..." is never read as an author list and a title.
-function extractTitle(line, allowVancouver) {
+// minQuoted: the content words a quoted span needs to count as a title (2
+// when omitted). The prose reader asks for 3 when the line has no cited year:
+// a sentence quoting a short phrase (the "Ten Commandments" honesty effect) is
+// not citing a work titled that, and 1.6.4 matched it to a 2017 record of that
+// title.
+function extractTitle(line, allowVancouver, minQuoted) {
   var s = String(line == null ? "" : line);
   // 1) quoted title (MLA): the first straight- or curly-quoted span
   var open = s.indexOf(String.fromCharCode(34));
@@ -453,7 +526,7 @@ function extractTitle(line, allowVancouver) {
     while (quoted.length && (quoted.charAt(quoted.length - 1) === "." || quoted.charAt(quoted.length - 1) === ",")) {
       quoted = trimStr(quoted.slice(0, quoted.length - 1));
     }
-    if (contentTokens(quoted).length >= 2) { return quoted; }
+    if (contentTokens(quoted).length >= (minQuoted || 2)) { return quoted; }
   }
   // 2) APA: an authors segment, "(year).", then the title sentence
   var at = s.indexOf("(");
@@ -884,7 +957,10 @@ function referenceFromText(text) {
     var ax = arxivIdIn(s);
     if (ax) { doi = "10.48550/arxiv." + ax; }
   }
-  var title = extractTitle(s);
+  // A quoted span of two content words is a title only beside a cited year:
+  // Cerullo (2015), "The problem with phi," is a reference; a sentence quoting
+  // the "Ten Commandments" effect, with no "(YYYY" of its own, is not (1.6.5).
+  var title = extractTitle(s, false, citedYearIn(s) ? 2 : 3);
   // "Smith et al. (2020) showed that ..." passes the APA rule with a
   // lowercase span; a cited title starts with a capital, a digit or a quote.
   if (title && !startsLikeTitle(title)) { title = null; }
@@ -931,7 +1007,11 @@ function referenceFromLink(href, text) {
 // ---- network --------------------------------------------------------------
 
 function getJson(url) {
-  return fetch(url, { headers: { "Accept": "application/json" } }).then(function (r) {
+  // a fetch that throws before it returns a promise (no network stack, a
+  // blocked scheme) did not answer, like a rejected one (1.6.5)
+  var p;
+  try { p = fetch(url, { headers: { "Accept": "application/json" } }); } catch (e) { return Promise.resolve({ __status: 0 }); }
+  return p.then(function (r) {
     if (r.status === 429) { return { __status: 429 }; }
     if (r.status === 404) { return { __status: 404 }; }
     if (!r.ok) { return { __status: r.status }; }
@@ -994,8 +1074,10 @@ function crossrefSearch(title, mailto, get) {
   // Crossref bibliographic search: CORS-open, keyless, unmetered — the
   // fallback when OpenAlex title search is budget-limited. Same client-direct
   // contract: the title goes from the user's browser, never a CiteStamp server.
+  // subtitle (1.6.5): a title field, read only to match a citation that gives
+  // the title and subtitle together; no author or export fields
   var url = CROSSREF + "/works?query.bibliographic=" + encodeURIComponent(title) +
-    "&rows=5&select=DOI,title,issued&mailto=" + encodeURIComponent(mailto);
+    "&rows=5&select=DOI,title,subtitle,issued&mailto=" + encodeURIComponent(mailto);
   return (get || getJson)(url);
 }
 
@@ -1007,7 +1089,7 @@ function crossrefSearch(title, mailto, get) {
 function crossrefSearchInYear(query, year, mailto, get) {
   var url = CROSSREF + "/works?query.bibliographic=" + encodeURIComponent(query) +
     "&filter=from-pub-date:" + year + "-01-01,until-pub-date:" + year + "-12-31" +
-    "&rows=10&select=DOI,title,issued&mailto=" + encodeURIComponent(mailto);
+    "&rows=10&select=DOI,title,subtitle,issued&mailto=" + encodeURIComponent(mailto);
   return (get || getJson)(url);
 }
 
@@ -1073,6 +1155,8 @@ function workFromOpenAlex(w) {
     id: w.id,
     doi: doi,
     title: w.title || w.display_name || null,
+    // OpenAlex records carry no subtitle; Crossref and DataCite candidates do
+    subtitle: w.subtitle || null,
     year: w.publication_year || null,
     is_retracted: w.is_retracted === true
   };
@@ -1082,11 +1166,12 @@ function workFromDataCite(d, fallbackDoi) {
   if (!d || !d.attributes) { return null; }
   var a = d.attributes;
   var doi = a.doi ? lower(a.doi) : fallbackDoi;
-  var title = (a.titles && a.titles[0] && a.titles[0].title) || null;
+  var dt = dataciteTitles(a);
   return {
     id: doi ? doiUrl(doi) : null,
     doi: doi || null,
-    title: title,
+    title: dt.title,
+    subtitle: dt.subtitle,
     year: a.publicationYear || null,
     is_retracted: false
   };
@@ -1107,6 +1192,7 @@ function candsFromCrossref(cr) {
       id: doiUrl(lower(it.DOI)),
       doi: lower(it.DOI),
       title: title,
+      subtitle: crossrefSubtitle(it),
       display_name: title,
       publication_year: (it.issued && it.issued["date-parts"] && it.issued["date-parts"][0] && it.issued["date-parts"][0][0]) || null,
       is_retracted: false
@@ -1122,13 +1208,15 @@ function candsFromDataCite(dc) {
   for (var i = 0; i < dc.data.length; i++) {
     var a = (dc.data[i] && dc.data[i].attributes) || {};
     var doi = a.doi ? lower(a.doi) : null;
-    var title = (a.titles && a.titles[0] && a.titles[0].title) || null;
+    var dt = dataciteTitles(a);
+    var title = dt.title;
     if (!doi || !title) { continue; }
     var y = parseInt(String(a.publicationYear == null ? "" : a.publicationYear), 10);
     out.push({
       id: doiUrl(doi),
       doi: doi,
       title: title,
+      subtitle: dt.subtitle,
       display_name: title,
       publication_year: isNaN(y) ? null : y,
       is_retracted: false
@@ -1369,6 +1457,12 @@ function checkOne(ref, opts) {
   function retractionFromCrossref(doi) {
     return crossrefByDoi(doi, mailto, get).then(function (cr) {
       if (cr && cr.message) {
+        // the same record carries the subtitle OpenAlex leaves out; the
+        // DOI-title cross-check reads it (no extra call)
+        var crDoi = cr.message.DOI ? lower(cr.message.DOI) : lower(doi);
+        if (v.work && !v.work.subtitle && v.work.doi && lower(v.work.doi) === crDoi) {
+          v.work.subtitle = crossrefSubtitle(cr.message);
+        }
         var ev = crossrefPublisherEvent(cr.message);
         if (ev) { applyPublisherEvent(v, ev); }
         else if (v.retracted !== "marked") { v.retracted = "clear"; }
@@ -1405,14 +1499,15 @@ function checkOne(ref, opts) {
     var bestContainScore = 0;
     for (var i = 0; i < results.length; i++) {
       var cand = results[i];
-      var candTitle = cand.title || cand.display_name || "";
-      var sc = titleScore(ref.title, candTitle);
-      var ex = sameTitle(ref.title, candTitle);
+      // a candidate's title alone, and with its subtitle (1.6.5)
+      var candForms = formsOf(cand);
+      var sc = scoreAmong(ref.title, candForms);
+      var ex = sameAmong(ref.title, candForms);
       if (sc > 0 && (!best || (ex && !bestExact) ||
           (ex === bestExact && (sc > bestScore || (sc === bestScore && yearGap(cand) < yearGap(best)))))) {
         bestScore = sc; best = cand; bestExact = ex;
       }
-      var cn = titleContainment(ref.title, candTitle);
+      var cn = containAmong(ref.title, candForms);
       if (cn > bestContainScore) { bestContainScore = cn; bestContain = cand; }
     }
     var rounded = Math.round(bestScore * 100) / 100;
@@ -1425,7 +1520,7 @@ function checkOne(ref, opts) {
       // between them, and two that nothing tells apart stay "confirm".
       var exacts = [];
       for (var x = 0; x < results.length; x++) {
-        if (sameTitle(ref.title, results[x].title || results[x].display_name || "")) { exacts.push(results[x]); }
+        if (sameAmong(ref.title, formsOf(results[x]))) { exacts.push(results[x]); }
       }
       if (exacts.length > 0) {
         var same = [];
@@ -1502,7 +1597,7 @@ function checkOne(ref, opts) {
           var tc = results[tw];
           var td = tc.doi ? lower(stripDoiPrefix(tc.doi)) : null;
           if (!td || seen[td] || yearGap(tc) !== yearGap(best)) { continue; }
-          if (!sameTitle(ref.title, tc.title || tc.display_name || "")) { continue; }
+          if (!sameAmong(ref.title, formsOf(tc))) { continue; }
           seen[td] = 1;
           twins.push(tc);
         }
@@ -1518,17 +1613,37 @@ function checkOne(ref, opts) {
           return Promise.resolve();
         }
       }
+      // A title of one or two content words is shared by many works, and with
+      // no cited year nothing tells them apart: an exact match is confirm,
+      // never a clean resolve (1.6.5; a quoted "Ten Commandments" in prose
+      // matched a 2017 record of that title).
+      if (!ref.year && contentTokens(ref.title).length <= 2) {
+        v.weakMatch = true;
+        v.notes.push("a title this short is shared by many works and the citation gives no year; confirm " +
+          (v.work && v.work.doi ? v.work.doi : "the match") + " is the work meant");
+        return Promise.resolve();
+      }
       if (v.work && v.work.is_retracted) { v.retracted = "marked"; v.retractedVia = "openalex-flag"; }
       // a DataCite-found work has no Crossref record to read a notice from
       if (v.work && v.work.doi && viaFor(best) !== "datacite-title") { return retractionFromCrossref(v.work.doi); }
       return Promise.resolve();
     }
+    // The two weak gates below found a CANDIDATE, not the work: its title does
+    // not match the cited one. It goes in v.suggestion, which every renderer
+    // prints as "closest match: ...", and v.work stays null, so no surface shows
+    // it as the matched record and the graph step reads no replication or
+    // refutation data off it (1.6.5; 1.6.4 printed an unrelated chapter under
+    // "The problem with phi"). The verdict is unchanged: resolved + weak = confirm.
+    function closestOnly(c) {
+      var w = workFromOpenAlex(c);
+      v.work = null;
+      v.suggestion = w ? { title: w.title, year: w.year, doi: w.doi } : null;
+    }
     if (best && bestScore >= (strict ? 0.5 : 0.4)) {
       v.resolved = true;
       v.resolvedVia = viaFor(best);
       v.weakMatch = true;
-      v.suggestion = null;
-      v.work = workFromOpenAlex(best);
+      closestOnly(best);
       v.notes.push("closest open match is weak — confirm this is the work you meant");
       return Promise.resolve();
     }
@@ -1539,8 +1654,7 @@ function checkOne(ref, opts) {
       v.resolved = true;
       v.resolvedVia = viaFor(bestContain);
       v.weakMatch = true;
-      v.suggestion = null;
-      v.work = workFromOpenAlex(bestContain);
+      closestOnly(bestContain);
       v.matchScore = Math.round(bestContainScore * 100) / 100;
       v.notes.push("your title looks like a shorter form of a longer work — confirm this is the one you meant");
       return Promise.resolve();
@@ -1595,18 +1709,25 @@ function checkOne(ref, opts) {
       for (var i = 0; i < cands.length; i++) { cands[i].src = src; }
       return cands;
     }
+    // the cited title equals one of the candidate's title forms (1.6.5)
+    function exactForm(c) {
+      var fs = formsOf(c);
+      for (var f = 0; f < fs.length; f++) {
+        var n = normTitle(fs[f]);
+        if (n.length > 0 && n === wanted) { return true; }
+      }
+      return false;
+    }
     function settles(cands) {
       for (var i = 0; i < cands.length; i++) {
-        var n = normTitle(cands[i].title || "");
         var py = cands[i].publication_year;
-        if (n.length > 0 && n === wanted && (!ref.year || !py || py === ref.year)) { return true; }
+        if (exactForm(cands[i]) && (!ref.year || !py || py === ref.year)) { return true; }
       }
       return false;
     }
     function hasExact(cands) {
       for (var i = 0; i < cands.length; i++) {
-        var n = normTitle(cands[i].title || "");
-        if (n.length > 0 && n === wanted) { return true; }
+        if (exactForm(cands[i])) { return true; }
       }
       return false;
     }
@@ -1714,7 +1835,9 @@ function checkOne(ref, opts) {
         // the title found the work; the cited DOI is still wrong, so this is
         // never a clean resolve
         v.weakMatch = true;
-        if (reg && v.notes.length > before) {
+        // (or the match is only a closest candidate, v.work null since 1.6.5:
+        // never say the cited title "matches" it)
+        if ((reg || !v.work) && v.notes.length > before) {
           // the title gate already said what matched (another year, several
           // twins, a weak match): lead with the DOI, do not repeat the match
           v.notes.splice(before, 0, "the cited DOI is " + where);
@@ -1725,7 +1848,8 @@ function checkOne(ref, opts) {
         return;
       }
       if (!anyAnswered(t)) {
-        v.notes.push("this DOI is " + where + "; the title search did not answer, so no corrected DOI could be looked up");
+        v.notes.push("this DOI is " + where + "; the title search did not answer, so no corrected DOI could be looked up" +
+          " (checked " + new Date().toISOString().slice(0, 10) + ")");
       } else {
         v.notes.push("this DOI is " + where + ", and the cited title has no confident match in " + searchedNames(t) +
           " (checked " + new Date().toISOString().slice(0, 10) + ")");
@@ -1752,6 +1876,7 @@ function checkOne(ref, opts) {
             id: cr.message.DOI ? doiUrl(lower(cr.message.DOI)) : null,
             doi: cr.message.DOI ? lower(cr.message.DOI) : ref.doi,
             title: (m.title && m.title[0]) || null,
+            subtitle: crossrefSubtitle(m),
             year: (m.issued && m.issued["date-parts"] && m.issued["date-parts"][0] && m.issued["date-parts"][0][0]) || null,
             is_retracted: false
           };
@@ -1858,9 +1983,13 @@ function checkOne(ref, opts) {
     // shape, and the DOI path alone would wave it through. Zero extra network
     // calls: scored against the already-resolved metadata. The containment
     // escape keeps a short cited form of a longer canonical title unflagged.
+    // Both checks read the title alone and the title with its subtitle (1.6.5:
+    // Carney 2010 cited with its full title read as a mismatch against
+    // Crossref's bare "Power Posing").
     if (v.resolved && ref.doi && ref.title && v.work && v.work.title) {
-      var agree = titleScore(ref.title, v.work.title);
-      var shortForm = titleContainment(ref.title, v.work.title) >= 1 && contentTokens(ref.title).length >= 2;
+      var workForms = titleForms(v.work.title, v.work.subtitle);
+      var agree = scoreAmong(ref.title, workForms);
+      var shortForm = containAmong(ref.title, workForms) >= 1 && contentTokens(ref.title).length >= 2;
       if (agree < 0.4 && !shortForm) {
         v.titleMismatch = true;
         v.matchScore = Math.round(agree * 100) / 100;
@@ -1871,6 +2000,16 @@ function checkOne(ref, opts) {
     v.status = deriveStatus(v);
     return v;
   }).catch(function () {
+    // The check threw before it finished. Unless a hard negative was already
+    // established (doi.org said no agency registered the DOI), it is a check
+    // that did not finish: couldn't check, never "not found" and never "found"
+    // (1.6.5: deriveStatus read an empty verdict as does-not-resolve, and a
+    // record that threw after v.resolved was set read as a clean resolve).
+    if (!v.doiUnregistered) {
+      v.resolved = false;
+      v.unchecked = true;
+      v.notes.push("the check stopped on an error before it finished");
+    }
     v.status = deriveStatus(v);
     return v;
   });

@@ -10,8 +10,9 @@
 //   1. Reads the page in this browser and finds the lines that ARE references:
 //      a DOI, an arXiv id, or a title the engine can isolate
 //      (CiteStampCheck.referenceFromText), plus doi.org / arxiv.org links
-//      (referenceFromLink). Prose is never sent to a search: a line with none
-//      of those is not a reference.
+//      (referenceFromLink). A line with none of those is not a reference and
+//      is never sent to a search. A quoted title counts when it has three or
+//      more content words, or two beside a cited year.
 //   2. Checks each one with the vendored engine in REGISTRY MODE: Crossref,
 //      DataCite and doi.org, never OpenAlex. That first, user-asked check also
 //      looks a resolving DOI up in CiteStamp's public graph, for recorded
@@ -215,7 +216,7 @@
     "Checked from your browser against Crossref, DataCite and doi.org. Only each " +
     "reference's DOI or title leaves this page. When you ask for the check, a DOI " +
     "that resolves is also looked up in CiteStamp's public graph, for recorded " +
-    "refutations. Nothing is stored."));
+    "refutations."));
   var sum = el("div", "sum");
   body.appendChild(sum);
   var list = el("div");

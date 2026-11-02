@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CiteStamp: Citation Graph & Reference Checker",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Any paper's citation graph, signed and machine-inferred kept apart, plus a reference checker for Overleaf and AI chat answers. Free.",
   "homepage_url": "https://citestamp.com",
   "icons": {
