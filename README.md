@@ -1,5 +1,11 @@
 # CiteStamp browser extensions
 
+![A click on the CiteStamp toolbar icon, then on "Check references on this page", opens a panel over an AI chat answer. Its 8 references are checked, and each row comes back found, naming the registry that answered (Crossref).](docs/demo.gif)
+
+One click checks the references in an AI chat answer against the DOI registries,
+right from your browser, and each row says which registry answered. Free on the
+[Chrome Web Store](https://chromewebstore.google.com/detail/citestamp/ibmggmbhdoofciggoakklidkgknmkjgi).
+
 Thin wrappers around the hosted service. The design rule for everything in
 this directory: **one core, thin shells**. The embeddable cores are authored
 once (`the served client scripts on citestamp.com`) and served from citestamp.com; the Chrome extension
