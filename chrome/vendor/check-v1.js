@@ -1,4 +1,4 @@
-/* CiteStamp citation health v1.6.5 — checked in your browser.
+/* CiteStamp citation health v1.6.6 — checked in your browser.
    Docs + live tool: https://citestamp.com/check
    Resolution is client-direct to OpenAlex, Crossref and DataCite, and to
    doi.org for a DOI none of them holds (registry mode: Crossref, DataCite
@@ -8,7 +8,7 @@
 "use strict";
 if (window.CiteStampCheck) { return; }
 
-var VERSION = "1.6.5";
+var VERSION = "1.6.6";
 var OPENALEX = "https://api.openalex.org";
 var CROSSREF = "https://api.crossref.org";
 var DATACITE = "https://api.datacite.org";
@@ -1376,6 +1376,11 @@ function emptyVerdict(ref) {
     doiUnregistered: false,
     refutations: 0,
     refutationSources: [],
+    // the graph ANSWERED the refutation lookup for this work (a record, or a
+    // 404 = not in the graph). Only then may a surface say "no recorded
+    // refutations": a closest match (no work), the unattended path (noGraph)
+    // and a graph that did not answer all leave it false (1.6.6).
+    graphChecked: false,
     inGraph: false,
     graphEdges: 0,
     graphSigned: 0,
@@ -1404,6 +1409,8 @@ function checkOne(ref, opts) {
   // the graph answer already fetched for a DOI no open database had; a
   // registered DOI that settles as resolved reuses it rather than asking twice
   var unfoundGraph = null;
+  // where the notes of an unregistered DOI's title search begin (-1 = none ran)
+  var titleNotesFrom = -1;
 
   function refutationsStep() {
     // The unattended monitor path (opts.noGraph) MUST NOT touch our graph
@@ -1432,7 +1439,9 @@ function checkOne(ref, opts) {
       }
       return g;
     }).then(function (g) {
-      if (!g || g.__status === 404 || !g.edges) { return; }
+      if (g && g.__status === 404) { v.graphChecked = true; return; }
+      if (!g || g.__status !== 200 || !g.edges) { return; }
+      v.graphChecked = true;
       var target = g.id || canonId;
       var srcs = [];
       for (var i = 0; i < g.edges.length; i++) {
@@ -1830,6 +1839,7 @@ function checkOne(ref, opts) {
     // A real paper cited with a mistyped DOI is the commonest slip of all:
     // search the cited title before giving the negative.
     var before = v.notes.length;
+    titleNotesFrom = before;
     return titleSearch().then(function (t) {
       if (v.resolved) {
         // the title found the work; the cited DOI is still wrong, so this is
@@ -2009,6 +2019,30 @@ function checkOne(ref, opts) {
       v.resolved = false;
       v.unchecked = true;
       v.notes.push("the check stopped on an error before it finished");
+    } else if (v.resolved) {
+      // doi.org said no agency registered the DOI, then the title search
+      // threw after a gate had begun filling a match (1.6.6; only a malformed
+      // record gets here): drop the partial match and everything read off it,
+      // so it never reads as ok. The hard negative stands, as it does when the
+      // title search does not answer.
+      v.resolved = false;
+      v.resolvedVia = null;
+      v.work = null;
+      v.suggestion = null;
+      v.weakMatch = false;
+      v.titleMismatch = false;
+      v.matchScore = 0;
+      v.retracted = "unknown";
+      v.retractedVia = null;
+      v.publisherEvent = null;
+      v.refutations = 0;
+      v.refutationSources = [];
+      v.graphChecked = false;
+      v.fredFailed = 0;
+      v.fredSuccessful = 0;
+      if (titleNotesFrom >= 0) { v.notes.splice(titleNotesFrom); }
+      v.notes.push("this DOI is not registered with any DOI agency (doi.org); the check stopped on an error before it finished, so no corrected DOI can be suggested" +
+        " (checked " + new Date().toISOString().slice(0, 10) + ")");
     }
     v.status = deriveStatus(v);
     return v;

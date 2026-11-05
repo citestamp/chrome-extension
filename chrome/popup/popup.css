@@ -66,7 +66,8 @@ main { padding: 12px 14px; min-height: 60px; }
 .panel p { margin: 8px 0; color: var(--vellum-dim); }
 .panel .fine { font-family: var(--mono); font-size: 10.5px; color: var(--vellum-faint); }
 
-button#scan {
+button#scan,
+button#acheck {
   background: transparent;
   border: 1px solid var(--seal-deep);
   color: var(--seal);
@@ -76,7 +77,8 @@ button#scan {
   font-size: 12px;
   cursor: pointer;
 }
-button#scan:hover { border-color: var(--seal); }
+button#scan:hover,
+button#acheck:hover { border-color: var(--seal); }
 
 .ptitle { font-size: 15.5px; font-weight: 600; margin: 2px 0 4px; }
 .pid {

@@ -787,7 +787,13 @@
     var problems = report.verdicts.filter(function (v) { return v && v.status !== "ok"; });
     if (problems.length === 0) {
       var ok = document.createElement("div");
-      ok.textContent = "every reference resolves, with no recorded refutations or retraction notices.";
+      // "no recorded refutations" only when the graph answered for every one
+      // of them (engine 1.6.6 graphChecked); an unanswered lookup found nothing
+      var unasked = report.verdicts.filter(function (v) { return v && !v.graphChecked; }).length;
+      ok.textContent = unasked === 0
+        ? "every reference resolves, with no recorded refutations or retraction notices."
+        : "every reference resolves, with no retraction notices. The refutation lookup did not answer for " +
+          unasked + " of them, so check again later.";
       ok.style.color = GREEN;
       out.appendChild(ok);
       return;

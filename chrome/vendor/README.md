@@ -18,7 +18,8 @@ and are **byte-identical** to what citestamp.com serves at the moment they are p
 **Status: fully wired. There is no remotely-hosted code left in the extension.**
 
 - `popup/popup.html` loads `entitlement-v1.js`, `check-v1.js`, `watchlist-v1.js`.
-- On claude.ai and gemini.google.com the popup injects `check-v1.js` and then
+- On any web page (1.0.13; before that, claude.ai and gemini.google.com only) the
+  popup injects `check-v1.js` and then
   `content/assistant.js` into the tab on the user's click (`executeScript`
   with both files, in that order, one ISOLATED world). That path calls
   `checkOne` with `registries: true` (Crossref, DataCite, doi.org; no OpenAlex).

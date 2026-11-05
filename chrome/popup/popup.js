@@ -214,19 +214,28 @@ async function scanActiveTab(tab) {
   }
 }
 
-// AI assistant pages where the popup offers the reference check. The click is
-// the user's: activeTab grants this one tab, and the engine plus
-// content/assistant.js are injected only then (no content_scripts entry, so no
-// new permission and nothing running on these sites unasked).
+// The reference check runs on any web page (1.0.13). The click is the user's:
+// activeTab grants this one tab, and the engine plus content/assistant.js are
+// injected only then (no content_scripts entry, so no new permission and
+// nothing running on a page unasked). On the AI assistants below it also
+// watches the tab for new answers; content/assistant.js keeps the same list.
 var ASSISTANT_HOSTS = { "claude.ai": 1, "gemini.google.com": 1 };
 
 function isAssistantPage(url) {
   try { return !!ASSISTANT_HOSTS[new URL(url).hostname]; } catch (e) { return false; }
 }
 
-function showAssistant(tab) {
-  $("status").textContent = "";
+function isWebPage(url) {
+  try { var p = new URL(url).protocol; return p === "https:" || p === "http:"; } catch (e) { return false; }
+}
+
+function showAssistant(tab, chat) {
   $("assistant").hidden = false;
+  $("ahead").textContent = chat
+    ? "Check the references in this conversation against the DOI registries."
+    : "Check the references on this page against the DOI registries.";
+  $("awatch").hidden = !chat;
+  $("apage").hidden = chat;
   $("acheck").addEventListener("click", async function () {
     $("acheck").disabled = true;
     $("status").textContent = "starting the check in the page…";
@@ -238,9 +247,14 @@ function showAssistant(tab) {
       window.close();
     } catch (e) {
       $("acheck").disabled = false;
-      $("status").textContent = "Chrome did not let CiteStamp read this tab. Reload the page and try again.";
+      $("status").textContent = "Chrome did not let CiteStamp read this tab. Chrome keeps extensions off a few pages, " +
+        "such as the Web Store; anywhere else, reload the page and try again.";
     }
   });
+}
+
+function checkBelowRecord() {
+  $("main").insertBefore($("assistant"), $("watchlist"));
 }
 
 async function main() {
@@ -252,20 +266,25 @@ async function main() {
   }
 
   if (isAssistantPage(tab.url)) {
-    showAssistant(tab);
+    $("status").textContent = "";
+    showAssistant(tab, true);
     return;
   }
 
+  var web = isWebPage(tab.url);
   var key = "tab:" + tab.id;
   var got = await chrome.storage.session.get(key);
   var state = got[key];
 
   if (state && state.doi) {
+    // a paper page: its citation record first, then the reference check
+    if (web) { showAssistant(tab, false); checkBelowRecord(); }
     render(state.doi);
     return;
   }
 
   $("status").textContent = "";
+  if (web) { showAssistant(tab, false); }
   $("nodoi").hidden = false;
   $("scan").addEventListener("click", async function () {
     $("status").textContent = "scanning…";
@@ -282,6 +301,7 @@ async function main() {
   setTimeout(async function () {
     var again = await chrome.storage.session.get(key);
     if (again[key] && again[key].doi && $("result").hidden) {
+      checkBelowRecord();
       render(again[key].doi);
     }
   }, 600);

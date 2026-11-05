@@ -2,7 +2,7 @@
 
 ![A click on the CiteStamp toolbar icon, then on "Check references on this page", opens a panel over an AI chat answer. Its 8 references are checked, and each row comes back found, naming the registry that answered (Crossref).](docs/demo.gif)
 
-One click checks the references in an AI chat answer against the DOI registries,
+One click checks the references on a web page, an AI chat answer included, against the DOI registries,
 right from your browser, and each row says which registry answered. Free on the
 [Chrome Web Store](https://chromewebstore.google.com/detail/citestamp/ibmggmbhdoofciggoakklidkgknmkjgi).
 
@@ -42,7 +42,7 @@ Data flow (every call the extension makes; the same list as https://citestamp.co
   downloads one shared file of publisher notices from api.citestamp.com, and all
   it sends is the key and the date of its last download. A Pro key also goes to
   api.citestamp.com to check your plan.
-- On claude.ai and gemini.google.com it checks references only when you click
+- On any web page it checks references only when you click
   for it: each DOI or title goes to Crossref, DataCite and doi.org (with the
   same different-year re-check at Crossref), and a DOI that resolves also goes
   to the public graph endpoint.
@@ -53,21 +53,29 @@ above makes no third-party requests at all: it talks only to
 `api.citestamp.com`. The Overleaf writing surface does make client-direct
 requests to OpenAlex, Crossref and DataCite (and doi.org for a DOI none of them
 holds), because that is how a citation is
-resolved without uploading your bibliography to us. The AI-chat check (below)
+resolved without uploading your bibliography to us. The page check (below)
 asks Crossref, DataCite and doi.org only.
 Policy: https://citestamp.com/privacy
 
-### AI chat answers (1.0.7): content/assistant.js
+### Any web page (1.0.13) and AI chat answers (1.0.7): content/assistant.js
 
-On claude.ai and gemini.google.com the popup offers **Check references on
-this page**. Nothing runs on those sites until that click: the file is not a
+On any http or https page the popup offers **Check references on this page**
+(from 1.0.7 to 1.0.12, on claude.ai and gemini.google.com only). Nothing runs
+on a page until that click: the file is not a
 declared content script, the popup injects `vendor/check-v1.js` +
 `content/assistant.js` with `chrome.scripting.executeScript`, and the click is
 what grants `activeTab`. No new permission, no `host_permissions`, no new
 `content_scripts` match (a new match would disable the extension on update until
 the user re-accepts).
 
-- **Finding references** is the engine's job (`CiteStampCheck.referenceFromText`
+- **Off a chat page** (1.0.13) only a reference with an identifier counts: a
+  DOI or an arXiv id in the text, a doi.org or arxiv.org link, or a link to a
+  journal page whose address holds the DOI. A quoted sentence in a news story
+  is not searched as a title, so nothing without an identifier leaves the
+  page. The panel says what it left out (the page's own paper, journal links
+  whose address holds no DOI). A visible same-site frame is read too, so a
+  draft's preview counts; a cross-site frame and an editor are skipped.
+- **Finding references** on an AI chat is the engine's job (`CiteStampCheck.referenceFromText`
   / `referenceFromLink`): a line is a reference when it carries a DOI, an arXiv
   id, or a title the APA / quoted-title / "Title (Authors, Year)" rules isolate.
   A quoted title needs three or more content words, or two beside a cited year;
@@ -80,7 +88,7 @@ the user re-accepts).
   `check_reference`. The user-asked check also reads the public graph for a
   resolving DOI (refutations, FORRT replication outcomes); the automatic path
   passes `noGraph:true` and never reaches a CiteStamp origin.
-- **The automatic path** is bounded: the MutationObserver callback only re-arms a
+- **The automatic path** (AI chat pages only) is bounded: the MutationObserver callback only re-arms a
   timer; a scan runs after 2.5 s of quiet (or 15 s of constant change), at most
   every 4 s; a reference is checked only when its line reads the same in two
   scans in a row; Claude's `data-is-streaming="true"` holds scans off; 100

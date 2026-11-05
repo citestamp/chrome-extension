@@ -1,23 +1,30 @@
-// CiteStamp — references in an AI assistant's answer (claude.ai, Gemini).
+// CiteStamp's reference check for a page: an AI assistant's answer (claude.ai,
+// Gemini) or any other web page (1.0.13).
 //
 // ON DEMAND ONLY. This file is not a declared content script: the popup
 // injects it, after vendor/check-v1.js, with chrome.scripting.executeScript
 // when the user clicks "Check references on this page". That click is what
 // grants access to the tab (activeTab), so the extension asks for no new
-// permission and no new host. Nothing runs on these sites until the user asks.
+// permission and no new host. Nothing runs on a page until the user asks.
 //
 // What it does, in order:
-//   1. Reads the page in this browser and finds the lines that ARE references:
-//      a DOI, an arXiv id, or a title the engine can isolate
+//   1. Reads the page in this browser and finds the lines that ARE references.
+//      On an AI chat: a DOI, an arXiv id, or a title the engine can isolate
 //      (CiteStampCheck.referenceFromText), plus doi.org / arxiv.org links
 //      (referenceFromLink). A line with none of those is not a reference and
 //      is never sent to a search. A quoted title counts when it has three or
 //      more content words, or two beside a cited year.
+//      On any other page only a reference with an identifier counts: a DOI or
+//      an arXiv id in the text, a doi.org or arxiv.org link, or a link to a
+//      journal page whose address holds the DOI (journalLinkDoi). A quoted
+//      sentence in a news story is not a title to search for, so nothing
+//      without an identifier leaves the page there.
 //   2. Checks each one with the vendored engine in REGISTRY MODE: Crossref,
 //      DataCite and doi.org, never OpenAlex. That first, user-asked check also
 //      looks a resolving DOI up in CiteStamp's public graph, for recorded
 //      refutations and replication outcomes: the DOI alone, never the text.
-//   3. Keeps watching the tab. When a new answer finishes, the references in
+//   3. On an AI chat only, keeps watching the tab. When a new answer
+//      finishes, the references in
 //      it are checked the same way with noGraph:true, so the automatic path
 //      never reaches a CiteStamp server. The observer is bounded: its callback
 //      only arms a timer, a scan runs after the page has been quiet for a
@@ -47,15 +54,21 @@
   var C = window.CiteStampCheck;
   if (!C || !C.referenceFromText) { return "engine-missing"; }
 
+  // An AI chat, where answers keep arriving and cite in prose: the hosts
+  // popup.js lists in ASSISTANT_HOSTS. Every other page is read when asked,
+  // for references that carry an identifier, and is not watched.
+  var CHAT = location.hostname === "claude.ai" || location.hostname === "gemini.google.com";
+
   var SITE = "https://citestamp.com";
   var MAILTO = "info@citestamp.com";
-  var MAX_REFS = 40;          // one user-asked check
-  var AUTO_MAX = 100;         // automatic checks per tab session
+  var MAX_REFS = 40;          // one user-asked check; "Check the next" takes the rest
+  var AUTO_MAX = 100;         // automatic checks per tab session (chat)
   var QUIET_MS = 2500;        // the page must be this still before a scan
   var MIN_GAP_MS = 4000;      // and scans are at least this far apart
   var CONCURRENCY = 2;       // Crossref allows 3 at once; the engine gates its searches
-  var MAX_BLOCKS = 3000;      // elements read per scan
+  var MAX_BLOCKS = CHAT ? 3000 : 10000; // elements read per scan (a chat rescans often)
   var MAX_BLOCK_TEXT = 6000;
+  var MAX_LINE = 600;         // referenceFromText reads lines up to this long
 
   var GREEN = "#7fa86b";
   var SEAL = "#d6a23f";
@@ -65,7 +78,149 @@
   // ---- finding references ----------------------------------------------------
 
   var BLOCKS = "li, p, td, dd, blockquote";
-  var SKIP = "[contenteditable=''], [contenteditable='true'], textarea, input, pre, code, nav, header, footer, form, [role='textbox'], [role='navigation']";
+  // Editable text is never read, on any page. Off a chat, sidebars too: a
+  // "related articles" box is not the page's references.
+  var SKIP = "[contenteditable=''], [contenteditable='true'], [contenteditable='plaintext-only'], textarea, input, pre, code, nav, header, footer, form, [role='textbox'], [role='navigation']" +
+    (CHAT ? "" : ", aside, [role='complementary']");
+
+  // ---- journal links (any page but a chat) ------------------------------------
+  // Writers mostly link the journal's own page, not doi.org. These rules read a
+  // DOI only from an address shape that carries it whole; anything else on a
+  // paper host is counted on screen as not read (paperHostOf). A DOI read this
+  // way that doi.org says no agency registered is shown as "couldn't check",
+  // never "not found": the address may hold more than the DOI.
+
+  var DOI_TAILS = { full: 1, abstract: 1, abs: 1, pdf: 1, epdf: 1, epub: 1, pdfdirect: 1, pdfplus: 1,
+    reader: 1, figures: 1, tables: 1, references: 1, citedby: 1, suppl: 1, suppinfo: 1, "full-text": 1, html: 1 };
+
+  function hostOf(u) {
+    return u.hostname.toLowerCase().replace(/^www\./, "");
+  }
+
+  // "10.<4-9 digits>/<suffix>" at the start of s, or null; the suffix stops at
+  // the first DOI_TAILS segment, and trailing punctuation is dropped.
+  function doiAt(s) {
+    var m = /^10\.\d{4,9}\/[^?#\s]+/.exec(s);
+    if (!m) { return null; }
+    var parts = m[0].split("/");
+    var keep = [parts[0]];
+    for (var i = 1; i < parts.length; i++) {
+      if (i > 1 && DOI_TAILS[parts[i].toLowerCase()]) { break; }
+      if (parts[i] === "") { break; }
+      keep.push(parts[i]);
+    }
+    if (keep.length < 2) { return null; }
+    return keep.join("/").replace(/[).,;:'"]+$/, "");
+  }
+
+  function journalLinkDoi(href) {
+    var u;
+    try { u = new URL(href, location.href); } catch (e) { return null; }
+    if (u.protocol !== "https:" && u.protocol !== "http:") { return null; }
+    var h = hostOf(u);
+    var p = u.pathname;
+    try { p = decodeURIComponent(p); } catch (e) {}
+    var m;
+    // Atypon and alike: /doi/10.x/y, /doi/full/10.x/y, /doi/pdf/10.x/y ...
+    // (science.org, pnas.org, Wiley, Taylor & Francis, SAGE, ACS, ACM, NEJM)
+    m = /\/doi\/(?:[a-z]+\/)?(10\.\d{4,9}\/.+)$/i.exec(p);
+    if (m) { return doiAt(m[1]); }
+    // bioRxiv, medRxiv: /content/10.1101/2020.04.14.20062463v2.full -> no version
+    if (h === "biorxiv.org" || h === "medrxiv.org") {
+      m = /^\/content\/(10\.\d{4,9}\/(?:\d{4}\.\d{2}\.\d{2}\.)?\d{6,8})(?:v\d+)?(?:[./]|$)/.exec(p);
+      return m ? m[1] : null;
+    }
+    // Springer: /article/10.1007/..., /chapter/..., /content/pdf/10.1007/x.pdf
+    if (h === "link.springer.com" || h === "rd.springer.com") {
+      m = /^\/(?:article|chapter|book|referenceworkentry|protocol|content\/pdf)\/(10\.\d{4,9}\/.+?)(?:\.pdf)?$/.exec(p);
+      return m ? doiAt(m[1]) : null;
+    }
+    // Frontiers: /articles/10.3389/fpsyg.2020.01234/full
+    if (h === "frontiersin.org" || /\.frontiersin\.org$/.test(h)) {
+      m = /\/articles\/(10\.\d{4,9}\/.+)$/.exec(p);
+      return m ? doiAt(m[1]) : null;
+    }
+    // Nature: /articles/<suffix> is the suffix of 10.1038/<suffix> (10.1057
+    // for the Palgrave journals nature.com also hosts)
+    if (h === "nature.com") {
+      m = /^\/articles\/([a-z][a-z0-9.-]*\d[a-z0-9.-]*?)(?:\.pdf)?\/?$/i.exec(p);
+      return m ? (/^(s41599|palcomms)/i.test(m[1]) ? "10.1057/" : "10.1038/") + m[1] : null;
+    }
+    // PLOS and the AEA name the DOI in the query: article?id=10.1371/...
+    if (h === "journals.plos.org" || h === "aeaweb.org") {
+      var id = u.searchParams.get("id");
+      return id ? doiAt(id) : null;
+    }
+    if (h === "elifesciences.org") {
+      m = /^\/articles\/(\d{4,6})\/?$/.exec(p);
+      return m ? "10.7554/eLife." + m[1] : null;
+    }
+    if (h === "papers.ssrn.com") {
+      var ab = u.searchParams.get("abstract_id");
+      return (ab && /^\d+$/.test(ab)) ? "10.2139/ssrn." + ab : null;
+    }
+    if (h === "zenodo.org") {
+      m = /^\/records?\/(\d+)\/?$/.exec(p);
+      return m ? "10.5281/zenodo." + m[1] : null;
+    }
+    return null;
+  }
+
+  // Article pages on hosts whose addresses carry no DOI (a PII, a PubMed or
+  // article number): not read, and said so on screen.
+  var PAPER_PAGES = [
+    ["cell.com", /\/(fulltext|retrieve\/pii|abstract)\//],
+    ["thelancet.com", /\/article\//],
+    ["sciencedirect.com", /^\/science\/article\//],
+    ["jamanetwork.com", /\/fullarticle\//],
+    ["pubmed.ncbi.nlm.nih.gov", /^\/\d+\/?$/],
+    ["pmc.ncbi.nlm.nih.gov", /^\/articles\/PMC\d+/],
+    ["ncbi.nlm.nih.gov", /^\/(pubmed\/\d+|pmc\/articles\/PMC\d+)/],
+    ["academic.oup.com", /\/article\//],
+    ["bmj.com", /^\/content\/\d+/],
+    ["ieeexplore.ieee.org", /^\/(abstract\/)?document\/\d+/],
+    ["mdpi.com", /^\/\d{4}-\d{3}[\dX]\/\d+\/\d+\/\d+/],
+    ["journals.lww.com", /\/(fulltext|abstract)\//],
+    ["cambridge.org", /^\/core\/journals\/.+\/article\//],
+    ["researchgate.net", /^\/publication\/\d+/],
+    ["semanticscholar.org", /^\/paper\//],
+    ["osf.io", /^\/(preprints\/[a-z]+\/)?[a-z0-9]{5}\/?$/],
+    ["arxiv.org", /^\/(abs|pdf|html)\//]
+  ];
+
+  function paperHostOf(href) {
+    var u;
+    try { u = new URL(href, location.href); } catch (e) { return null; }
+    var h = hostOf(u);
+    for (var i = 0; i < PAPER_PAGES.length; i++) {
+      var ph = PAPER_PAGES[i][0];
+      if ((h === ph || h.slice(-ph.length - 1) === "." + ph) && PAPER_PAGES[i][1].test(u.pathname)) { return ph; }
+    }
+    return null;
+  }
+
+  // An entry of the page's own reference list (Wikipedia, a publisher), so an
+  // entry with no identifier anywhere on the page can be counted on screen,
+  // and a PubMed link beside an entry's DOI is not counted as a link not read.
+  var REF_LISTS = "[role='doc-bibliography'], [role='doc-endnotes'], [class*='references' i], [id*='references' i], " +
+    "[class*='bibliography' i], [id*='bibliography' i], .reflist";
+  function refEntryOf(el) {
+    var li = el.tagName === "LI" ? el : el.closest("li");
+    return (li && li.closest(REF_LISTS)) ? li : null;
+  }
+
+  // The page's own paper (a publisher's citation_doi tag, an arXiv abstract):
+  // not one of its references.
+  function ownDoi() {
+    var names = ["citation_doi", "dc.identifier", "prism.doi", "bepress_citation_doi"];
+    for (var i = 0; i < names.length; i++) {
+      var meta = document.querySelector('meta[name="' + names[i] + '" i]');
+      var d = meta && doiAt(String(meta.getAttribute("content") || "").replace(/^(doi:\s*|https?:\/\/(dx\.)?doi\.org\/)/i, ""));
+      if (d) { return d.toLowerCase(); }
+    }
+    var ax = /arxiv\.org\/(abs|pdf|html)\/(\d{4}\.\d{4,5})/i.exec(location.href);
+    return ax ? ("10.48550/arxiv." + ax[2]).toLowerCase() : null;
+  }
 
   function normT(t) {
     return String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -80,14 +235,82 @@
     return el.getClientRects().length > 0;
   }
 
+  // Off a chat, a line too long for referenceFromText (a paragraph of prose)
+  // is read for identifiers only, a sentence at a time: a quote in the same
+  // sentence is not taken for the cited title.
+  function identifiersIn(line) {
+    var out = [];
+    var parts = line.split(". ");
+    for (var i = 0; i < parts.length; i++) {
+      var r = parts[i].length <= MAX_LINE ? C.referenceFromText(parts[i]) : null;
+      if (r && r.doi) { r.title = null; r.year = null; out.push(r); }
+    }
+    return out;
+  }
+
+  // What a scan left out, for the panel to say (off a chat).
+  var skipped = { own: null, paperHosts: {}, paperLinks: 0, blocksCut: 0, bareEntries: 0 };
+
+  // A link off a chat: doi.org / arxiv.org (the engine), else a journal page
+  // whose address holds the DOI. Returns the reference, or the paper host it
+  // could not read (a string), or null.
+  // A link's words count as the cited title only in a reference-list entry:
+  // in prose they are the writer's phrase ("a new study", the journal's name),
+  // and a DOI-title cross-check on them reads as a mismatch.
+  function readLink(a, inEntry) {
+    var lr = C.referenceFromLink(a.href, a.innerText || "");
+    if (!lr) {
+      var jd = journalLinkDoi(a.href);
+      if (!jd) { return paperHostOf(a.href); }
+      lr = C.referenceFromLink("https://doi.org/" + jd, a.innerText || "");
+      if (lr) { lr.via = "link"; lr.href = a.href; }
+    }
+    if (lr) {
+      lr.fromLink = true;
+      if (!inEntry) { lr.title = null; }
+    }
+    return lr;
+  }
+
+  function countUnread(a, host, unread) {
+    if (unread[a.href]) { return; }
+    unread[a.href] = 1;
+    skipped.paperLinks++;
+    skipped.paperHosts[host] = 1;
+  }
+
+  // Off a chat, the page and any same-site frame it shows: an editor's preview
+  // (Substack draws its draft preview in one) is a rendered page, not
+  // editable text. Frames from other sites (ads, embeds) cannot be read and
+  // are not tried.
+  function roots() {
+    if (CHAT) { return [document.querySelector("main") || document.body]; }
+    var out = [document.body];
+    var frames = document.querySelectorAll("iframe");
+    for (var i = 0; i < frames.length; i++) {
+      var f = frames[i];
+      if (!visible(f) || f.closest("[contenteditable='true'], [contenteditable=''], textarea")) { continue; }
+      var d = null;
+      try { d = f.contentDocument; } catch (e) { d = null; }
+      if (d && d.body) { out.push(d.body); }
+    }
+    return out;
+  }
+
   // Every reference on the page, in document order, deduplicated.
   function findReferences() {
-    var root = document.querySelector("main") || document.body;
+    var rootList = roots();
+    var own = CHAT ? null : ownDoi();
     var out = [];
     var byKey = {};
+    var unread = {};
+    skipped = { own: null, paperHosts: {}, paperLinks: 0, blocksCut: 0, bareEntries: 0 };
+    var entries = [];        // reference-list entries seen, and whether any held an identifier
+    var entryHad = [];
     function add(ref, el) {
       var k = keyOf(ref);
       if (k === "t:" || k === "doi:") { return; }
+      if (own && ref.doi && ref.doi.toLowerCase() === own) { skipped.own = own; return; }
       var had = byKey[k];
       if (had) {
         // the same DOI seen again: a bare link adds nothing, a cited title
@@ -102,35 +325,83 @@
       byKey[k] = { key: k, ref: ref, el: el };
       out.push(byKey[k]);
     }
-    var blocks = root.querySelectorAll(BLOCKS);
-    var n = Math.min(blocks.length, MAX_BLOCKS);
-    for (var i = 0; i < n; i++) {
-      var el = blocks[i];
-      if (el.closest(SKIP) || !visible(el)) { continue; }
-      // a list item holding its own paragraphs is read through them
-      if (el.tagName === "LI" && el.querySelector("p, li")) { continue; }
-      var text = (el.innerText || "").slice(0, MAX_BLOCK_TEXT);
-      var lines = text.split("\n");
-      var fromText = [];
-      for (var j = 0; j < lines.length; j++) {
-        var r = C.referenceFromText(lines[j]);
-        if (r) { fromText.push(r); }
+    var budget = MAX_BLOCKS;
+    for (var ri = 0; ri < rootList.length; ri++) {
+      var root = rootList[ri];
+      var blocks = root.querySelectorAll(BLOCKS);
+      var n = Math.min(blocks.length, budget);
+      budget -= n;
+      skipped.blocksCut += blocks.length - n;
+      for (var i = 0; i < n; i++) {
+        var el = blocks[i];
+        if (el.closest(SKIP) || !visible(el)) { continue; }
+        // a list item holding its own paragraphs is read through them
+        if (el.tagName === "LI" && el.querySelector("p, li")) { continue; }
+        var text = (el.innerText || "").slice(0, MAX_BLOCK_TEXT);
+        var lines = text.split("\n");
+        var fromText = [];
+        for (var j = 0; j < lines.length; j++) {
+          var r = C.referenceFromText(lines[j]);
+          // off a chat, a title read from the text stands only beside a cited
+          // year, "(2015)": a quote in a news story has none
+          if (r && !CHAT && !r.year) { r.title = null; }
+          if (r && (r.doi || r.title)) { fromText.push(r); }
+          else if (!r && !CHAT && lines[j].length > MAX_LINE) { fromText = fromText.concat(identifiersIn(lines[j])); }
+        }
+        var links = el.querySelectorAll("a[href]");
+        var fromLinks = [];
+        var notRead = [];
+        var entry = CHAT ? null : refEntryOf(el);
+        for (var m = 0; m < links.length; m++) {
+          var lr;
+          if (CHAT) {
+            lr = C.referenceFromLink(links[m].getAttribute("href"), links[m].innerText || "");
+          } else {
+            lr = readLink(links[m], !!entry);
+            if (typeof lr === "string") { notRead.push([links[m], lr]); lr = null; }
+          }
+          if (lr) { fromLinks.push(lr); }
+        }
+        // "Vaswani et al. (2017). Attention is all you need." with the arXiv
+        // link on the title: one reference, the link supplying its identifier
+        // (off a chat, only in a reference-list entry: in prose the sentence is
+        // not that work's title)
+        if (fromText.length === 1 && !fromText[0].doi && fromLinks.length === 1 && (CHAT || entry)) {
+          fromText[0].doi = fromLinks[0].doi;
+          fromText[0].via = fromLinks[0].via;
+          fromText[0].href = fromLinks[0].href;
+          fromLinks = [];
+        }
+        var hasId = fromLinks.length > 0;
+        for (var a = 0; a < fromText.length; a++) {
+          // off a chat, a line without an identifier is not a reference
+          if (CHAT || fromText[a].doi) { add(fromText[a], el); }
+          if (fromText[a].doi) { hasId = true; }
+        }
+        for (var b = 0; b < fromLinks.length; b++) { add(fromLinks[b], el); }
+        if (CHAT) { continue; }
+        if (entry) {
+          var at = entries.indexOf(entry);
+          if (at < 0) { entries.push(entry); entryHad.push(hasId); } else if (hasId) { entryHad[at] = true; }
+        }
+        // in a reference-list entry with a DOI, a PubMed link is the same work
+        if (!(entry && hasId)) {
+          for (var q = 0; q < notRead.length; q++) { countUnread(notRead[q][0], notRead[q][1], unread); }
+        }
       }
-      var links = el.querySelectorAll("a[href]");
-      var fromLinks = [];
-      for (var m = 0; m < links.length; m++) {
-        var lr = C.referenceFromLink(links[m].getAttribute("href"), links[m].innerText || "");
-        if (lr) { fromLinks.push(lr); }
+      if (!CHAT) {
+        // links outside any paragraph or list item (a podcast's show notes)
+        var loose = root.querySelectorAll("a[href]");
+        for (var z = 0; z < loose.length && z < MAX_BLOCKS; z++) {
+          var la = loose[z];
+          if (la.closest(BLOCKS) || la.closest(SKIP) || !visible(la)) { continue; }
+          var lz = readLink(la, false);
+          if (typeof lz === "string") { countUnread(la, lz, unread); }
+          else if (lz) { add(lz, la); }
+        }
       }
-      // "Vaswani et al. (2017). Attention is all you need." with the arXiv
-      // link on the title: one reference, the link supplying its identifier
-      if (fromText.length === 1 && !fromText[0].doi && fromLinks.length === 1) {
-        fromText[0].doi = fromLinks[0].doi;
-        fromLinks = [];
-      }
-      for (var a = 0; a < fromText.length; a++) { add(fromText[a], el); }
-      for (var b = 0; b < fromLinks.length; b++) { add(fromLinks[b], el); }
     }
+    for (var e = 0; e < entryHad.length; e++) { if (!entryHad[e]) { skipped.bareEntries++; } }
     return out;
   }
 
@@ -206,7 +477,7 @@
   minBtn.title = "Minimise";
   var closeBtn = el("button", "ic", "×");
   closeBtn.type = "button";
-  closeBtn.title = "Close and stop watching this tab";
+  closeBtn.title = CHAT ? "Close and stop watching this tab" : "Close";
   top.appendChild(minBtn);
   top.appendChild(closeBtn);
   box.appendChild(top);
@@ -214,23 +485,38 @@
   var body = el("div", "body");
   body.appendChild(el("div", "fine",
     "Checked from your browser against Crossref, DataCite and doi.org. Only each " +
-    "reference's DOI or title leaves this page. When you ask for the check, a DOI " +
+    "reference's DOI or title leaves this page (and, when a title matches a work from " +
+    "another year, the rest of that line, so Crossref can search the cited year). " +
+    "When you ask for the check, a DOI " +
     "that resolves is also looked up in CiteStamp's public graph, for recorded " +
     "refutations."));
   var sum = el("div", "sum");
   body.appendChild(sum);
+  var notes = el("div");       // what the scan left out, said out loud
+  body.appendChild(notes);
   var list = el("div");
   body.appendChild(list);
+  var restLine = el("div", "fine");
+  restLine.style.display = "none";
+  body.appendChild(restLine);
   var watchLine = el("div", "fine");
   body.appendChild(watchLine);
   var bar = el("div", "bar");
+  var nextBtn = el("button", "btn", "Check the next " + MAX_REFS);
+  nextBtn.type = "button";
+  nextBtn.style.display = "none";
   var againBtn = el("button", "btn", "Check again");
   againBtn.type = "button";
   var watchBtn = el("button", "btn quiet", "Stop watching");
   watchBtn.type = "button";
+  bar.appendChild(nextBtn);
   bar.appendChild(againBtn);
   bar.appendChild(watchBtn);
   body.appendChild(bar);
+  if (!CHAT) {
+    watchLine.style.display = "none";
+    watchBtn.style.display = "none";
+  }
   var foot = el("div", "fine");
   foot.appendChild(link(SITE + "/check", "how the check works"));
   foot.appendChild(document.createTextNode(" · "));
@@ -248,6 +534,14 @@
       return (v.status === "does-not-resolve") ? "notfound" : "cant";
     }
     return (v.weakMatch || v.titleMismatch) ? "confirm" : "found";
+  }
+
+  // A DOI read out of a journal page's address that doi.org says no agency
+  // registered: the address may hold more than the DOI, so it is a check that
+  // could not be made, never "not found".
+  function kindOf(item) {
+    var k = verdictOf(item.verdict);
+    return (k === "notfound" && item.ref.via === "link") ? "cant" : k;
   }
 
   var CHIP = { found: "found", confirm: "confirm", notfound: "not found", cant: "couldn't check", wait: "checking" };
@@ -279,14 +573,27 @@
     var row = item.row || el("div", "row");
     while (row.firstChild) { row.removeChild(row.firstChild); }
     var v = item.verdict;
-    var kind = item.pending ? "wait" : verdictOf(v);
+    var kind = item.pending ? "wait" : kindOf(item);
     var head = el("div", "cited");
     head.appendChild(el("span", "chip " + kind, CHIP[kind]));
     var cited = item.ref.raw || item.ref.title || item.ref.doi || "";
-    head.appendChild(document.createTextNode(cited.length > 220 ? cited.slice(0, 217) + "..." : cited));
+    if (cited.length > 220) { cited = cited.slice(0, 217) + "..."; }
+    // off a chat, a row read from a link shows the link's words as a link's
+    if (!CHAT && item.ref.fromLink) { cited = "\u201c" + cited + "\u201d (link)"; }
+    head.appendChild(document.createTextNode(cited));
     row.appendChild(head);
     if (!item.pending) {
-      row.appendChild(el("div", "why", reasonOf(v, kind)));
+      if (item.ref.via === "link" && verdictOf(v) === "notfound") {
+        row.appendChild(el("div", "why", "doi.org has no record of the DOI read from this link's address (" +
+          item.ref.doi + "); the address may hold more than the DOI. Open the link to confirm."));
+      } else {
+        row.appendChild(el("div", "why", reasonOf(v, kind)));
+      }
+      if (item.ref.via === "link" && item.ref.href) {
+        var from = el("div", "why", "DOI read from the link to ");
+        from.appendChild(link(item.ref.href, hostOf(new URL(item.ref.href))));
+        row.appendChild(from);
+      }
       var w = v && v.work;
       if (w && w.doi && kind !== "notfound") {
         var wl = el("div", "work");
@@ -329,18 +636,79 @@
     var waiting = 0;
     for (var i = 0; i < items.length; i++) {
       if (items[i].pending) { waiting++; continue; }
-      c[verdictOf(items[i].verdict)]++;
+      c[kindOf(items[i])]++;
     }
-    if (!items.length) {
-      sum.textContent = scanned
-        ? "No references found on this page yet: a reference here is a line with a DOI, an arXiv id, or an author-year-title citation."
-        : "Reading the page...";
+    renderNotes();
+    renderRest();
+    if (pdf) {
+      sum.textContent = "This tab shows a PDF. The check reads references on web pages and can't read inside Chrome's PDF viewer.";
       return;
     }
-    sum.textContent = items.length + " reference" + (items.length === 1 ? "" : "s") + " · " +
+    if (!items.length) {
+      sum.textContent = !scanned ? "Reading the page..." : CHAT
+        ? "No references found on this page yet: a reference here is a line with a DOI, an arXiv id, or an author-year-title citation."
+        : "No references with a DOI or an arXiv id on this page. Here a reference needs one: printed on the page, " +
+          "or in a link to doi.org, arxiv.org or a journal page whose address holds the DOI. Text in forms and editors isn't read." +
+          (editorShown() ? " If you're writing in an editor, open its preview and check again." : "");
+      return;
+    }
+    var total = items.length + rest.length;
+    sum.textContent = (rest.length
+      ? items.length + " of " + total + " references checked"
+      : items.length + " reference" + (items.length === 1 ? "" : "s")) + " · " +
       c.found + " found · " + c.confirm + " confirm · " + c.notfound + " not found · " +
       c.cant + " couldn't check" + (waiting ? " · checking " + waiting : "") +
       (lastChecked ? " · " + lastChecked : "");
+  }
+
+  // A rich-text editor on screen (a draft being written), not a comment box.
+  function editorShown() {
+    var eds = document.querySelectorAll("[contenteditable='true']");
+    for (var i = 0; i < eds.length; i++) {
+      if (visible(eds[i]) && eds[i].getBoundingClientRect().height > 150) { return true; }
+    }
+    return false;
+  }
+
+  // Everything a scan saw and did not check is said on screen.
+  function renderNotes() {
+    while (notes.firstChild) { notes.removeChild(notes.firstChild); }
+    if (skipped.own) {
+      notes.appendChild(el("div", "fine", "Left out: this page's own paper (" + skipped.own +
+        "). Its citation record is in the CiteStamp popup."));
+    }
+    if (skipped.bareEntries) {
+      notes.appendChild(el("div", "fine", "Not checked: " + skipped.bareEntries + " entr" +
+        (skipped.bareEntries === 1 ? "y" : "ies") + " in this page's reference list " +
+        (skipped.bareEntries === 1 ? "has" : "have") + " no DOI or arXiv id on the page."));
+    }
+    if (skipped.paperLinks) {
+      notes.appendChild(el("div", "fine", "Not read: " + skipped.paperLinks + " link" +
+        (skipped.paperLinks === 1 ? "" : "s") + " to paper pages whose address holds no DOI (" +
+        Object.keys(skipped.paperHosts).join(", ") + "). A DOI printed on the page, or a doi.org link, is read."));
+    }
+    if (skipped.blocksCut > 0) {
+      notes.appendChild(el("div", "fine", "This page is long: only its first " + MAX_BLOCKS.toLocaleString("en-US") +
+        " text blocks were read, and " + skipped.blocksCut.toLocaleString("en-US") + " were not."));
+    }
+  }
+
+  function renderRest() {
+    // on a chat the watcher may have checked some of them since
+    var left = [];
+    for (var i = 0; i < rest.length; i++) { if (!checkedKeys[rest[i].key]) { left.push(rest[i]); } }
+    rest = left;
+    if (rest.length) {
+      var next = Math.min(MAX_REFS, rest.length);
+      restLine.textContent = rest.length + " more reference" + (rest.length === 1 ? " on this page isn't" : "s on this page aren't") +
+        " checked yet. \"Check the next " + next + "\" checks " + (next === rest.length ? "them" : "the next " + next) + ".";
+      restLine.style.display = "";
+      nextBtn.textContent = "Check the next " + next;
+      nextBtn.style.display = "";
+    } else {
+      restLine.style.display = "none";
+      nextBtn.style.display = "none";
+    }
   }
 
   function renderWatch() {
@@ -361,10 +729,12 @@
   // ---- checking ------------------------------------------------------------------
 
   var items = [];          // shown rows, page order
-  var checkedKeys = {};    // key -> item, this conversation
+  var rest = [];           // found on the page, not checked yet (over MAX_REFS)
+  var checkedKeys = {};    // key -> item, this page or conversation
   var seenOnce = {};       // auto path: key -> line text from the previous scan
   var scanned = false;
-  var watching = true;
+  var pdf = !CHAT && document.contentType === "application/pdf";
+  var watching = CHAT;
   var autoCount = 0;
   var lastChecked = "";
   var path = location.pathname;
@@ -412,6 +782,7 @@
     checkedKeys = {};
     seenOnce = {};
     queue = [];
+    rest = [];
     while (list.firstChild) { list.removeChild(list.firstChild); }
   }
 
@@ -421,7 +792,7 @@
   var waitedFor = 0;
   function checkAll() {
     box.className = "box";
-    if (streaming() && waitedFor < 60) {
+    if (CHAT && streaming() && waitedFor < 60) {
       waitedFor++;
       sum.textContent = "Waiting for the answer to finish...";
       setTimeout(checkAll, 1000);
@@ -433,14 +804,13 @@
     checkedKeys = {};
     seenOnce = {};
     queue = [];
+    rest = [];
     while (list.firstChild) { list.removeChild(list.firstChild); }
+    if (pdf) { scanned = true; renderSummary(); return; }
     var found = findReferences();
     scanned = true;
     for (var i = 0; i < found.length && i < MAX_REFS; i++) { enqueue(found[i], false); }
-    if (found.length > MAX_REFS) {
-      list.appendChild(el("div", "fine", (found.length - MAX_REFS) + " more references on this page were not checked (" +
-        MAX_REFS + " per check)."));
-    }
+    rest = found.slice(MAX_REFS);
     renderSummary();
     renderWatch();
     pump();
@@ -514,6 +884,17 @@
   }
 
   againBtn.addEventListener("click", function () { checkAll(); });
+  // The rest of a long page, MAX_REFS at a time, each a click of the user's.
+  nextBtn.addEventListener("click", function () {
+    var take = [];
+    while (rest.length && take.length < MAX_REFS) {
+      var f = rest.shift();
+      if (!checkedKeys[f.key]) { take.push(f); }
+    }
+    for (var i = 0; i < take.length; i++) { enqueue(take[i], false); }
+    renderSummary();
+    pump();
+  });
   watchBtn.addEventListener("click", function () {
     watching = !watching;
     if (watching) { observe(); arm(); } else { observer.disconnect(); if (timer) { clearTimeout(timer); timer = null; } }
@@ -539,13 +920,13 @@
   window.__csAssistant = {
     checkAll: function () {
       if (!host.parentNode) { (document.body || document.documentElement).appendChild(host); }
-      watching = true;
-      observe();
+      watching = CHAT;
+      if (CHAT) { observe(); }
       checkAll();
     }
   };
 
-  observe();
+  if (CHAT) { observe(); }
   checkAll();
   return "started";
 })();
