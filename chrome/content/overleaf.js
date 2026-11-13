@@ -839,6 +839,7 @@
   }
 
   function problemText(v) {
+    if (v.pubmedNowhere) { return "the cited PubMed ID doesn't lead to " + (v.ref && v.ref.title ? "this work" : "a work") + " — check the PubMed ID"; }
     if (v.status === "does-not-resolve") { return "does not resolve to a known work"; }
     if (v.status === "unchecked") { return "couldn't check — lookup source unavailable, try again"; }
     if (v.status === "no-match") { return "no confident match in the title search — not verified"; }

@@ -34,8 +34,9 @@ Data flow (every call the extension makes; the same list as https://citestamp.co
   title from your browser to Crossref, DataCite and OpenAlex, a DOI none of them
   holds to doi.org, and resolved identifiers to the public graph endpoint. When a
   title matches a work from a different year, Crossref is asked again inside the
-  cited year with the rest of that reference (authors, year and venue). The .bib
-  file and the manuscript are never sent anywhere as a document.
+  cited year with the rest of that reference (authors, year and venue). An entry
+  with a PubMed ID and no DOI sends that ID to PubMed (NCBI's esummary service,
+  the ID only). The .bib file and the manuscript are never sent anywhere as a document.
 - The Pro `@cite` picker searches Crossref and OpenAlex with what you type.
 - The daily watchlist re-check asks Crossref, DataCite and OpenAlex directly and
   sends nothing about your list to CiteStamp. With a Pro key it instead
@@ -45,7 +46,8 @@ Data flow (every call the extension makes; the same list as https://citestamp.co
 - On any web page it checks references only when you click
   for it: each DOI or title goes to Crossref, DataCite and doi.org (with the
   same different-year re-check at Crossref), and a DOI that resolves also goes
-  to the public graph endpoint.
+  to the public graph endpoint. On an AI chat page, a PubMed ID given without a
+  DOI goes to PubMed (the ID only).
 
 No analytics, no history collection, **no remote code anywhere in the
 package**, every core is vendored and loaded from disk. The detect/popup path
@@ -54,10 +56,11 @@ above makes no third-party requests at all: it talks only to
 requests to OpenAlex, Crossref and DataCite (and doi.org for a DOI none of them
 holds), because that is how a citation is
 resolved without uploading your bibliography to us. The page check (below)
-asks Crossref, DataCite and doi.org only.
+asks Crossref, DataCite and doi.org, plus PubMed for a PubMed ID with no DOI on
+an AI chat page.
 Policy: https://citestamp.com/privacy
 
-### Any web page (1.0.13) and AI chat answers (1.0.7): content/assistant.js
+### Any web page (1.0.13), AI chat answers (1.0.7) and PubMed IDs (1.0.14): content/assistant.js
 
 On any http or https page the popup offers **Check references on this page**
 (from 1.0.7 to 1.0.12, on claude.ai and gemini.google.com only). Nothing runs
@@ -75,6 +78,13 @@ the user re-accepts).
   page. The panel says what it left out (the page's own paper, journal links
   whose address holds no DOI). A visible same-site frame is read too, so a
   draft's preview counts; a cross-site frame and an editor are skipped.
+- **PubMed IDs** (1.0.14): on an AI chat page, a line that carries a PubMed ID
+  and no DOI counts as a reference, and a pubmed.ncbi.nlm.nih.gov link is read for
+  its ID. A reference whose text already holds its DOI keeps one row, and PubMed
+  is not asked. A PubMed ID that PubMed has no record for, or that leads to a
+  different paper with no title match, comes back as confirm ("the cited PubMed
+  ID doesn't lead to this work"), never as not found. Off a chat page nothing
+  changed: only a DOI or an arXiv id counts there.
 - **Finding references** on an AI chat is the engine's job (`CiteStampCheck.referenceFromText`
   / `referenceFromLink`): a line is a reference when it carries a DOI, an arXiv
   id, or a title the APA / quoted-title / "Title (Authors, Year)" rules isolate.
@@ -85,7 +95,8 @@ the user re-accepts).
   so it does not depend on either site's markup.
 - **Registry mode** (`opts.registries`): Crossref, DataCite and doi.org, never
   OpenAlex (its keyless budget is per IP), the same chain as the server's
-  `check_reference`. The user-asked check also reads the public graph for a
+  `check_reference`. A PubMed ID with no DOI is looked up at PubMed's esummary
+  service (engine 1.7.0). The user-asked check also reads the public graph for a
   resolving DOI (refutations, FORRT replication outcomes); the automatic path
   passes `noGraph:true` and never reaches a CiteStamp origin.
 - **The automatic path** (AI chat pages only) is bounded: the MutationObserver callback only re-arms a

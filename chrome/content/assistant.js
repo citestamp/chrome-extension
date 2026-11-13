@@ -10,8 +10,8 @@
 // What it does, in order:
 //   1. Reads the page in this browser and finds the lines that ARE references.
 //      On an AI chat: a DOI, an arXiv id, or a title the engine can isolate
-//      (CiteStampCheck.referenceFromText), plus doi.org / arxiv.org links
-//      (referenceFromLink). A line with none of those is not a reference and
+//      (CiteStampCheck.referenceFromText), plus doi.org / arxiv.org / PubMed
+//      links (referenceFromLink). A PubMed ID with no DOI counts (engine 1.7.0). A line with none of those is not a reference and
 //      is never sent to a search. A quoted title counts when it has three or
 //      more content words, or two beside a cited year.
 //      On any other page only a reference with an identifier counts: a DOI or
@@ -228,6 +228,7 @@
 
   function keyOf(ref) {
     if (ref.doi) { return "doi:" + ref.doi.toLowerCase(); }
+    if (ref.pmid) { return "pmid:" + ref.pmid; }
     return "t:" + normT(ref.title);
   }
 
@@ -259,6 +260,9 @@
   // and a DOI-title cross-check on them reads as a mismatch.
   function readLink(a, inEntry) {
     var lr = C.referenceFromLink(a.href, a.innerText || "");
+    // off a chat a PubMed link stays a page this does not read (engine 1.7.0
+    // reads its PubMed ID; in a reference-list entry it is the same work as the DOI)
+    if (lr && !lr.doi) { lr = null; }
     if (!lr) {
       var jd = journalLinkDoi(a.href);
       if (!jd) { return paperHostOf(a.href); }
@@ -345,7 +349,9 @@
           // off a chat, a title read from the text stands only beside a cited
           // year, "(2015)": a quote in a news story has none
           if (r && !CHAT && !r.year) { r.title = null; }
-          if (r && (r.doi || r.title)) { fromText.push(r); }
+          // a PubMed ID with no DOI is an identifier on a chat (engine 1.7.0); off a
+          // chat only a DOI or an arXiv id counts, as before
+          if (r && (r.doi || r.title || (CHAT && r.pmid))) { fromText.push(r); }
           else if (!r && !CHAT && lines[j].length > MAX_LINE) { fromText = fromText.concat(identifiersIn(lines[j])); }
         }
         var links = el.querySelectorAll("a[href]");
@@ -368,9 +374,17 @@
         // not that work's title)
         if (fromText.length === 1 && !fromText[0].doi && fromLinks.length === 1 && (CHAT || entry)) {
           fromText[0].doi = fromLinks[0].doi;
+          if (!fromText[0].doi && fromLinks[0].pmid && !fromText[0].pmid) { fromText[0].pmid = fromLinks[0].pmid; }
           fromText[0].via = fromLinks[0].via;
           fromText[0].href = fromLinks[0].href;
           fromLinks = [];
+        }
+        // a reference whose text carries its DOI, with a PubMed link beside it, is one
+        // work: the link adds no second row, and PubMed is never asked (engine 1.7.0)
+        if (fromText.length === 1 && fromText[0].doi) {
+          var keepLinks = [];
+          for (var kl = 0; kl < fromLinks.length; kl++) { if (fromLinks[kl].doi) { keepLinks.push(fromLinks[kl]); } }
+          fromLinks = keepLinks;
         }
         var hasId = fromLinks.length > 0;
         for (var a = 0; a < fromText.length; a++) {
@@ -531,6 +545,9 @@
   function verdictOf(v) {
     if (!v) { return "cant"; }
     if (!v.resolved) {
+      // a cited PubMed ID that PubMed holds no record under (or holds another
+      // paper under), with no title match: confirm, as check_reference says it
+      if (v.pubmedNowhere) { return "confirm"; }
       return (v.status === "does-not-resolve") ? "notfound" : "cant";
     }
     return (v.weakMatch || v.titleMismatch) ? "confirm" : "found";
@@ -548,7 +565,7 @@
 
   var VIA = {
     "crossref-doi": "Crossref", "datacite-doi": "DataCite", "crossref-title": "Crossref",
-    "datacite-title": "DataCite", "doi-registration": "doi.org"
+    "datacite-title": "DataCite", "doi-registration": "doi.org", "pubmed": "PubMed"
   };
 
   function reasonOf(v, kind) {
@@ -600,6 +617,11 @@
         if (w.title) { wl.appendChild(document.createTextNode(w.title + (w.year ? " (" + w.year + ") " : " "))); }
         wl.appendChild(link("https://doi.org/" + w.doi, "doi.org/" + w.doi));
         row.appendChild(wl);
+      } else if (w && w.pmid && kind !== "notfound") {
+        var pl = el("div", "work");
+        if (w.title) { pl.appendChild(document.createTextNode(w.title + (w.year ? " (" + w.year + ") " : " "))); }
+        pl.appendChild(link("https://pubmed.ncbi.nlm.nih.gov/" + w.pmid + "/", "pubmed.ncbi.nlm.nih.gov/" + w.pmid));
+        row.appendChild(pl);
       }
       if (v && v.retracted === "marked") {
         row.appendChild(el("div", "flag", C.markedLabel ? C.markedLabel(v) : "marked retracted (best-effort)"));

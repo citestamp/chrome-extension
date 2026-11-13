@@ -1,20 +1,22 @@
-/* CiteStamp citation health v1.6.6 — checked in your browser.
+/* CiteStamp citation health v1.7.0 — checked in your browser.
    Docs + live tool: https://citestamp.com/check
    Resolution is client-direct to OpenAlex, Crossref and DataCite, and to
    doi.org for a DOI none of them holds (registry mode: Crossref, DataCite
-   and doi.org only); the only CiteStamp call is the public graph endpoint,
+   and doi.org only), and to PubMed (NCBI) for a PubMed ID given without a
+   DOI; the only CiteStamp call is the public graph endpoint,
    with a bare identifier. Your bibliography never leaves this browser. */
 (function () {
 "use strict";
 if (window.CiteStampCheck) { return; }
 
-var VERSION = "1.6.6";
+var VERSION = "1.7.0";
 var OPENALEX = "https://api.openalex.org";
 var CROSSREF = "https://api.crossref.org";
 var DATACITE = "https://api.datacite.org";
 var DOIORG = "https://doi.org";
 var SITE = "https://citestamp.com";
 var MAILTO = "info@citestamp.com";
+var PUBMED = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi";
 
 // ---- tiny character helpers (no regex, no backslash) ----------------------
 
@@ -282,7 +284,14 @@ function parseBib(text) {
       if (ax) { doi = "10.48550/arxiv." + ax; }
     }
     var title = fieldValue(inner, "title");
-    refs.push({ key: key, doi: doi || null, title: title || null, year: bibYear(inner), raw: trimStr(rawEntry).slice(0, 240) });
+    var entry = { key: key, doi: doi || null, title: title || null, year: bibYear(inner), raw: trimStr(rawEntry).slice(0, 240) };
+    // a pmid field, or a PubMed ID anywhere in an entry with no DOI (1.7.0)
+    if (!doi) {
+      var pf = fieldValue(inner, "pmid");
+      var pm = pf ? findPmid("PMID " + pf) : findPmid(inner);
+      if (pm) { entry.pmid = pm; }
+    }
+    refs.push(entry);
   }
   pushPlainLines(refs, s.slice(i));
   return refs;
@@ -484,6 +493,25 @@ function vancouverTitle(line) {
 // The year a formatted reference line cites: an APA "(YYYY", else the last
 // free-standing year outside its DOI and links (Vancouver "2020;383", IEEE
 // ", 1979,"). null when there is none.
+// A Vancouver page is a number right after the colon that follows a volume or
+// an issue ("382(18):1708", "44:101"), and the end of its range ("...:1708-1720").
+// Neither is a cited year (1.7.0: the last year-shaped number won, and
+// "2020;382(18):1708-1720" read as 1720). A date (2021-05-04), a span of years
+// (2019-2020) or "Year:2015" still reads as a year.
+function colonPageAt(w, k) {
+  if (k < 2 || w.charAt(k - 1) !== ":") { return false; }
+  var c = w.charAt(k - 2);
+  return c === ")" || isDigit(c);
+}
+function pageLikeAt(w, k) {
+  if (colonPageAt(w, k)) { return true; }
+  var before = k > 0 ? w.charCodeAt(k - 1) : 0;
+  if (before !== 45 && before !== 8211 && before !== 8212) { return false; }
+  var j = k - 2;
+  while (j >= 0 && (isDigit(w.charAt(j)) || (lower(w.charAt(j)) >= "a" && lower(w.charAt(j)) <= "z"))) { j--; }
+  return j >= 0 && colonPageAt(w, j + 1);
+}
+
 function lineYear(s) {
   var y = citedYearIn(s);
   if (y) { return y; }
@@ -495,7 +523,7 @@ function lineYear(s) {
     if (lw.indexOf("doi") >= 0 || lw.indexOf("http") >= 0 || lw.indexOf("/") >= 0 || lw.indexOf("arxiv") >= 0) { continue; }
     for (var k = 0; k + 4 <= w.length; k++) {
       if (isYearAt(w, k) && (k === 0 || !isDigit(w.charAt(k - 1))) &&
-          (k + 4 === w.length || !isDigit(w.charAt(k + 4)))) {
+          (k + 4 === w.length || !isDigit(w.charAt(k + 4))) && !pageLikeAt(w, k)) {
         found = parseInt(w.slice(k, k + 4), 10);
         k += 3;
       }
@@ -716,14 +744,21 @@ function parseList(text) {
     var line = trimStr(lines[i]);
     if (line.length === 0) { continue; }
     var doi = findDoi(line);
-    var title = extractTitle(line, true);
+    // a PubMed ID counts only on a line with no DOI, and never rides into the title (1.7.0)
+    var pmid = doi ? null : findPmid(line);
+    var tline = pmid ? stripPmid(line) : line;
+    var title = extractTitle(tline, true);
     // the cited year rides only on a formatted reference whose title was read;
     // a bare title line keeps no year (a year inside a title is not a citation)
-    var year = title ? lineYear(line) : null;
+    var year = title ? lineYear(tline) : null;
     // a DOI line only carries a title when the extraction is confident (it
     // feeds the DOI-title cross-check); a bare line falls back to whole-line
     if (doi) { refs.push({ key: null, doi: doi, title: title, year: year, raw: line.slice(0, 240) }); }
-    else { refs.push({ key: null, doi: null, title: title || line, year: year, raw: line.slice(0, 240) }); }
+    else {
+      var r = { key: null, doi: null, title: title || (!pmid ? line : (wordyLeftover(tline) ? tline : null)), year: year, raw: line.slice(0, 240) };
+      if (pmid) { r.pmid = pmid; }
+      refs.push(r);
+    }
   }
   return refs;
 }
@@ -957,6 +992,10 @@ function referenceFromText(text) {
     var ax = arxivIdIn(s);
     if (ax) { doi = "10.48550/arxiv." + ax; }
   }
+  // a PubMed ID with no DOI is an identifier too (1.7.0); its token is kept out of the title
+  var pmid = doi ? null : findPmid(s);
+  var full = s;
+  if (pmid) { s = stripPmid(s); }
   // A quoted span of two content words is a title only beside a cited year:
   // Cerullo (2015), "The problem with phi," is a reference; a sentence quoting
   // the "Ten Commandments" effect, with no "(YYYY" of its own, is not (1.6.5).
@@ -969,8 +1008,10 @@ function referenceFromText(text) {
     var ta = titleBeforeAuthorYear(s);
     if (ta) { title = ta.title; year = ta.year; }
   }
-  if (!doi && !title) { return null; }
-  return { key: null, doi: doi, title: title, year: year, raw: s.slice(0, 240) };
+  if (!doi && !title && !pmid) { return null; }
+  var out = { key: null, doi: doi, title: title, year: year, raw: full.slice(0, 240) };
+  if (pmid) { out.pmid = pmid; }
+  return out;
 }
 
 // A link in an answer. Only a doi.org link or an arxiv.org link carries an
@@ -994,14 +1035,23 @@ function referenceFromLink(href, text) {
     var ax = arxivIdIn(lo);
     if (ax) { doi = "10.48550/arxiv." + ax; }
   }
-  if (!doi) { return null; }
+  // a PubMed address carries a PubMed ID (1.7.0)
+  var pmid = null;
+  if (!doi && (lo.indexOf("https://pubmed.ncbi.nlm.nih.gov/") === 0 || lo.indexOf("http://pubmed.ncbi.nlm.nih.gov/") === 0 ||
+      lo.indexOf("https://www.ncbi.nlm.nih.gov/pubmed/") === 0 || lo.indexOf("https://ncbi.nlm.nih.gov/pubmed/") === 0 ||
+      lo.indexOf("http://www.ncbi.nlm.nih.gov/pubmed/") === 0 || lo.indexOf("http://ncbi.nlm.nih.gov/pubmed/") === 0)) {
+    pmid = findPmid(lo);
+  }
+  if (!doi && !pmid) { return null; }
   var t = collapseSpaces(plainSpaces(String(text == null ? "" : text)));
   while (t.length && ".,:;".indexOf(t.charAt(t.length - 1)) >= 0) { t = trimStr(t.slice(0, t.length - 1)); }
   var lt = lower(t);
   var titleLike = t.length > 0 && t.length <= 300 && findDoi(t) === null &&
     lt.indexOf("http") !== 0 && lt.indexOf("arxiv") < 0 && lt.indexOf("et al") < 0 &&
     !isYearAt(t, t.length - 4) && contentTokens(t).length >= 4 && startsLikeTitle(t);
-  return { key: null, doi: doi, title: titleLike ? t : null, year: null, raw: (t || h).slice(0, 240) };
+  var link = { key: null, doi: doi, title: titleLike ? t : null, year: null, raw: (t || h).slice(0, 240) };
+  if (pmid) { link.pmid = pmid; }
+  return link;
 }
 
 // ---- network --------------------------------------------------------------
@@ -1319,6 +1369,9 @@ function markingLabel(type, source) {
 }
 // A verdict's marking label (a marked verdict with no event is a retraction).
 function markedLabel(v) {
+  // marked from PubMed's record (1.7.0): a retraction, even when the publisher's
+  // record carries only a softer notice (an expression of concern)
+  if (v && v.retractedVia === "pubmed") { return markingLabel("retraction", null); }
   var pe = v && v.publisherEvent;
   return markingLabel((pe && pe.type) ? pe.type : "retraction", pe ? pe.source : null);
 }
@@ -1329,6 +1382,7 @@ function statusLabel(status, pe) {
 }
 // Where a marking that credits no one came from; "" when the provenance line already says.
 function markingOrigin(v) {
+  if (v && v.retracted === "marked" && v.retractedVia === "pubmed") { return "Marking from PubMed's record of this work, which lists it as a retracted publication."; }
   if (!v || v.retracted !== "marked" || provenanceLine(v.publisherEvent)) { return ""; }
   if (v.retractedVia === "openalex-flag") { return "Marking from OpenAlex's record of this work; no retraction notice was found on its Crossref record."; }
   if (v.retractedVia === "crossref-title") { return "Marking read from the title of this work's Crossref record; no retraction notice is linked to it."; }
@@ -1357,6 +1411,268 @@ function citedDoiResolved(v) {
 function exportDoi(v) {
   if (v && v.ref && v.ref.doi && citedDoiResolved(v)) { return lower(v.ref.doi); }
   return (v && v.work && v.work.doi) ? v.work.doi : null;
+}
+
+// ---- PubMed IDs (1.7.0) ---------------------------------------------------
+// A PubMed ID the text carries: "PMID: 32109013", "PMID 32109013", "PubMed PMID:
+// 32109013", or a PubMed address (pubmed.ncbi.nlm.nih.gov/32109013,
+// www.ncbi.nlm.nih.gov/pubmed/32109013). A PMC ID (PMC7092819) is a different
+// number and is never read as one. The same rule as the server's check_reference.
+// It is read only when the reference has no DOI: with a DOI, the DOI checks run.
+var PMID_AT = /(^|[^a-z0-9_])pmid[ ]*[:#]?[ ]*([0-9]{1,9})(?![a-z0-9_])/i;
+var PMID_TOKENS = /(^|[^a-z0-9_])(pubmed[ ]+)?pmid[ ]*[:#]?[ ]*[0-9]{1,9}(?![a-z0-9_])|(^|[^a-z0-9_])(pubmed[ ]+central[ ]+)?pmcid[ ]*:?[ ]*pmc[0-9]+/gi;
+
+function isWordChar(ch) {
+  var c = lower(ch);
+  return (c >= "a" && c <= "z") || isDigit(c) || c === "_";
+}
+
+function pmidAfter(s, mark) {
+  var lo = lower(s);
+  var at = lo.indexOf(mark);
+  while (at >= 0) {
+    var j = at + mark.length;
+    var d = "";
+    while (j < s.length && isDigit(s.charAt(j)) && d.length < 10) { d += s.charAt(j); j++; }
+    if (d.length >= 1 && d.length <= 9 && (j >= s.length || !isWordChar(s.charAt(j)))) { return d; }
+    at = lo.indexOf(mark, at + 1);
+  }
+  return null;
+}
+
+function findPmid(text) {
+  var s = collapseSpaces(plainSpaces(String(text == null ? "" : text)));
+  var m = PMID_AT.exec(s);
+  var id = m ? m[2] : (pmidAfter(s, "pubmed.ncbi.nlm.nih.gov/") || pmidAfter(s, "ncbi.nlm.nih.gov/pubmed/"));
+  if (!id) { return null; }
+  while (id.length > 1 && id.charAt(0) === "0") { id = id.slice(1); }
+  return id === "0" ? null : id;
+}
+
+// The text with its PubMed and PMC ID tokens and PubMed addresses taken out, so
+// they never ride into a cited title or a title search. Spaces are normalised
+// first, as findPmid does (a tab or a no-break space after "PMID:").
+function stripPmid(s) {
+  var t = collapseSpaces(plainSpaces(String(s == null ? "" : s))).replace(PMID_TOKENS, "$1$3 ");
+  var words = t.split(" ");
+  var keep = [];
+  for (var i = 0; i < words.length; i++) {
+    var lw = lower(words[i]);
+    if (lw.indexOf("pubmed.ncbi.nlm.nih.gov/") >= 0 || lw.indexOf("ncbi.nlm.nih.gov/pubmed/") >= 0) { continue; }
+    keep.push(words[i]);
+  }
+  return collapseSpaces(keep.join(" "));
+}
+
+// What is left of a line once its PubMed ID is out counts as a cited title only
+// when it holds two content words with letters: "(PMID: 32109013)" leaves "()",
+// which is no title, and a PubMed record cannot disagree with it.
+function wordyLeftover(s) {
+  var t = contentTokens(s);
+  var n = 0;
+  for (var i = 0; i < t.length; i++) { if (/[a-z]/.test(t[i])) { n++; } }
+  return n >= 2;
+}
+
+// NCBI's E-utilities answer browsers (Access-Control-Allow-Origin: *) at 3
+// requests a second per address without a key (x-ratelimit-limit, read
+// 2026-11-10), so every PubMed lookup goes through one gate, PUBMED_GAP_MS
+// apart, with one patient retry. Only the ID is sent.
+var PUBMED_GAP_MS = 400;
+var pubmedGate = Promise.resolve();
+function pubmedGet(url) {
+  var run = pubmedGate.then(function () { return patientGet(url); });
+  pubmedGate = run.then(function () {}, function () {}).then(function () {
+    return new Promise(function (done) { setTimeout(done, PUBMED_GAP_MS); });
+  });
+  return run;
+}
+
+// PubMed's record of the cited ID: answered true with a record, answered true
+// with none (PubMed holds nothing under the ID: it answers 200 with "cannot get
+// document summary"), or answered false (no answer). Read as the server reads it.
+function pubmedLookup(pmid) {
+  var url = PUBMED + "?db=pubmed&retmode=json&tool=citestamp&email=" + encodeURIComponent(MAILTO) + "&id=" + pmid;
+  return pubmedGet(url).then(function (r) {
+    var x = (r && r.__status === 200 && r.result) ? r.result[pmid] : null;
+    if (!x || typeof x !== "object") { return { answered: false, record: null }; }
+    if (x.error) { return { answered: lower(x.error).indexOf("cannot get document summary") >= 0, record: null }; }
+    var title = typeof x.title === "string" ? trimStr(x.title) : "";
+    if (title.charAt(0) === "[" && title.lastIndexOf("]") > 0 && title.slice(title.lastIndexOf("]") + 1).replace(".", "") === "") {
+      title = title.slice(1, title.lastIndexOf("]"));
+    }
+    if (title.charAt(title.length - 1) === ".") { title = title.slice(0, title.length - 1); }
+    var ids = Array.isArray(x.articleids) ? x.articleids : [];
+    var doi = null;
+    for (var i = 0; i < ids.length; i++) {
+      var a = ids[i];
+      if (a && a.idtype === "doi" && typeof a.value === "string" && findDoi(a.value)) { doi = findDoi(a.value); break; }
+    }
+    var ym = /(^|[^0-9])((18|19|20)[0-9][0-9])(?![0-9])/.exec(String(x.pubdate == null ? "" : x.pubdate));
+    var types = Array.isArray(x.pubtype) ? x.pubtype : [];
+    var retracted = false;
+    for (var k = 0; k < types.length; k++) { if (lower(types[k]) === "retracted publication") { retracted = true; } }
+    return {
+      answered: true,
+      record: {
+        pmid: pmid,
+        title: title || null,
+        journal: (typeof x.source === "string" && x.source) ? x.source : null,
+        year: ym ? parseInt(ym[2], 10) : null,
+        doi: doi,
+        retracted: retracted
+      }
+    };
+  });
+}
+
+// PubMed's record is of a different work than the one cited: word overlap under
+// 0.4 and neither title's words all inside the other's (false when either is
+// missing). The server's rule, on this engine's tokens.
+function pubmedTitleDisagrees(cited, recTitle) {
+  if (!cited || !recTitle) { return false; }
+  var A = {}, B = {}, na = 0, nb = 0, inter = 0;
+  var ta = tokens(cited), tb = tokens(recTitle);
+  for (var i = 0; i < ta.length; i++) { if (!A[ta[i]]) { A[ta[i]] = 1; na++; } }
+  for (var j = 0; j < tb.length; j++) { if (!B[tb[j]]) { B[tb[j]] = 1; nb++; if (A[tb[j]]) { inter++; } } }
+  // nothing to compare is no disagreement
+  if (na === 0 || nb === 0) { return false; }
+  var jac = inter / (na + nb - inter);
+  var small = na <= nb ? A : B;
+  var large = na <= nb ? B : A;
+  var ns = na <= nb ? na : nb;
+  var inside = ns >= 3;
+  for (var w in small) { if (Object.prototype.hasOwnProperty.call(small, w) && !large[w]) { inside = false; } }
+  return jac < 0.4 && !inside;
+}
+
+function pubmedLine(rec) {
+  var where = [];
+  if (rec.journal) { where.push(rec.journal); }
+  if (rec.year) { where.push(String(rec.year)); }
+  return '"' + (rec.title || "untitled") + '"' + (where.length ? " (" + where.join(" ") + ")" : "") +
+    ", https://pubmed.ncbi.nlm.nih.gov/" + rec.pmid + "/";
+}
+
+function copyOf(o) {
+  var out = {};
+  for (var k in o) { if (Object.prototype.hasOwnProperty.call(o, k)) { out[k] = o[k]; } }
+  return out;
+}
+
+// A verdict resolved from PubMed's own record (no DOI read).
+function fromPubmedRecord(ref, rec, note) {
+  var v = emptyVerdict(ref);
+  v.resolved = true;
+  v.resolvedVia = "pubmed";
+  v.work = {
+    id: "https://pubmed.ncbi.nlm.nih.gov/" + rec.pmid + "/",
+    doi: null,
+    title: rec.title,
+    subtitle: null,
+    year: rec.year,
+    pmid: rec.pmid,
+    journal: rec.journal
+  };
+  v.notes.push("PubMed returned the record of PMID " + rec.pmid + ": " + pubmedLine(rec) + (note ? "; " + note : ""));
+  return v;
+}
+
+function finishPubmed(v, pm) {
+  var rec = pm.record;
+  if (rec && rec.retracted && v.retracted !== "marked") { v.retracted = "marked"; v.retractedVia = "pubmed"; }
+  v.pubmed = {
+    pmid: v.ref.pmid,
+    answered: pm.answered,
+    record: rec ? { title: rec.title, journal: rec.journal, year: rec.year, doi: rec.doi, retracted: rec.retracted } : null
+  };
+  v.status = deriveStatus(v);
+  return v;
+}
+
+// ---- a reference with a PubMed ID and no DOI (1.7.0) -------------------------
+// The answers the server's check_reference gives. PubMed holding the ID under the
+// cited title answers the check: its DOI, when it has one, is checked as a cited
+// DOI is (the record, the publisher's notices, the graph), and when that DOI does
+// not resolve, PubMed's record is the answer. PubMed's record of another paper,
+// or no record under the ID, is never a clean resolve and never the hard negative
+// (that needs a DOI no agency registered): the title checks run as usual; a match
+// there is a weak one with the PubMed ID probably mistyped, and no match keeps the
+// no-match status (every surface shows it as a warning, never red) with
+// pubmedNowhere set, which the surfaces that read it word as "the cited PubMed ID
+// doesn't lead to this work". PubMed not answering changes nothing but a note.
+function checkPubmed(ref, opts) {
+  var pmid = ref.pmid;
+  var day = new Date().toISOString().slice(0, 10);
+  var inner = copyOf(opts);
+  inner.pubmedDone = true;
+  return pubmedLookup(pmid).then(function (pm) {
+    var rec = pm.record;
+    if (rec && !pubmedTitleDisagrees(ref.title, rec.title)) {
+      var marked = rec.retracted ? "PubMed lists it as a retracted publication" : "";
+      if (rec.doi) {
+        // PubMed's DOI is read for the record, the publisher's notices and the graph. It is
+        // not a DOI the reference cites, so no title cross-check or corrected-DOI search runs
+        // on it, and only a clean read of it stands; anything else leaves PubMed's record as
+        // the answer (as the server's check_reference does).
+        var dref = copyOf(ref);
+        dref.doi = rec.doi;
+        dref.title = null;
+        dref.year = null;
+        return checkOne(dref, inner).then(function (d) {
+          var via = d.resolvedVia;
+          if (d.resolved && !d.weakMatch && !d.titleMismatch && (via === "openalex-doi" || via === "crossref-doi" || via === "datacite-doi")) {
+            d.ref = ref;
+            d.notes.unshift("PubMed's record of PMID " + pmid + " gives the DOI " + rec.doi + (marked ? "; " + marked : ""));
+            return finishPubmed(d, pm);
+          }
+          var why = d.doiUnregistered
+            ? "its DOI, " + rec.doi + ", is not registered with any DOI agency (doi.org)"
+            : (d.resolved && via === "doi-registration")
+              ? "its DOI, " + rec.doi + ", is registered with " + (d.doiAgency || "a DOI agency") + ", whose record is not in Crossref or DataCite"
+              : "the DOI lookups did not answer for its DOI, " + rec.doi + ", so the publisher's record was not read";
+          return finishPubmed(fromPubmedRecord(ref, rec, why + (marked ? "; " + marked : "")), pm);
+        });
+      }
+      return finishPubmed(fromPubmedRecord(ref, rec, marked || null), pm);
+    }
+    return checkOne(ref, inner).then(function (v) {
+      if (!pm.answered) {
+        if (v.nothingToCheck) {
+          v.nothingToCheck = false;
+          v.unchecked = true;
+          v.notes = ["PubMed did not answer for PMID " + pmid + ", and the reference has no title to search"];
+        } else {
+          v.notes.push("PubMed did not answer for PMID " + pmid);
+        }
+        return finishPubmed(v, pm);
+      }
+      if (v.resolved) {
+        v.weakMatch = true;
+        v.notes.unshift((rec ? "PubMed's record of PMID " + pmid + " is a different title, " + pubmedLine(rec)
+          : "PubMed holds no record under PMID " + pmid + " (checked " + day + ")") +
+          "; the cited title matches this work, so the PubMed ID is probably mistyped");
+        return finishPubmed(v, pm);
+      }
+      var said = rec ? "PubMed's record of PMID " + pmid + " is a different paper, " + pubmedLine(rec)
+        : "PubMed holds no record under PMID " + pmid;
+      v.pubmedNowhere = true;
+      if (v.nothingToCheck) {
+        v.nothingToCheck = false;
+        v.noMatch = true;
+        v.notes = [said + " (checked " + day + "), and the reference has no title to search. Check the PubMed ID"];
+      } else {
+        v.notes.unshift("the cited PubMed ID doesn't lead to this work: " + said + " (checked " + day + "). Check the PubMed ID");
+      }
+      return finishPubmed(v, pm);
+    });
+  }).catch(function () {
+    var v = emptyVerdict(ref);
+    v.unchecked = true;
+    v.notes.push("the check stopped on an error before it finished");
+    v.status = deriveStatus(v);
+    return v;
+  });
 }
 
 function emptyVerdict(ref) {
@@ -1399,6 +1715,8 @@ function emptyVerdict(ref) {
 
 function checkOne(ref, opts) {
   opts = opts || {};
+  // a PubMed ID with no DOI is read at PubMed first (1.7.0)
+  if (ref && !ref.doi && ref.pmid && !opts.pubmedDone) { return checkPubmed(ref, opts); }
   var site = opts.site || SITE;
   var mailto = opts.mailto || MAILTO;
   // registry mode: no OpenAlex call anywhere in this check (see the header)
@@ -2147,6 +2465,7 @@ window.CiteStampCheck = {
   markingOrigin: markingOrigin,
   referenceFromText: referenceFromText,
   referenceFromLink: referenceFromLink,
-  exportDoi: exportDoi
+  exportDoi: exportDoi,
+  findPmid: findPmid
 };
 })();
